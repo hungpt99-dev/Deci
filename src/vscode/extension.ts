@@ -125,7 +125,7 @@ export function showInputsPanel(
   const io = { exists: () => false, read: () => "" };
   const ticket = resolveRefInput(ticketRaw, io);
   const doc = resolveRefInput(docRaw, io);
-  const panel = vscode.window.createWebviewPanel("changepilot.inputs", "Inputs", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.inputs", "Inputs", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(renderInputsMarkdown(spec, ticket, doc))}</pre></body></html>`;
 }
 
@@ -163,16 +163,16 @@ export function showReviewMap(vscode: Vscode, diffText: string): void {
   const report = runFullVerify(diffText, { runCommands: false });
   const map = applyVerification(buildReviewMap(diffText), report.verifiedPaths);
   const body = `${renderMarkdown(map)}\n${renderDecisionsMarkdown(decisionsForDiff(diffText))}\n${renderVerifyMarkdown(report)}`;
-  const panel = vscode.window.createWebviewPanel("changepilot.review", "Review Map", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.review", "Review Map", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(body)}</pre></body></html>`;
 }
 
-/** US-009: read `changepilot.provider` + model/baseURL/key settings. Env wins over editor settings. */
+/** US-009: read `deci.provider` + model/baseURL/key settings. Env wins over editor settings. */
 export function providerForHost(
   vscode: Vscode,
   env: Record<string, string | undefined> = {},
 ): LlmConfig {
-  const cfg = vscode.workspace.getConfiguration("changepilot");
+  const cfg = vscode.workspace.getConfiguration("deci");
   const get = (key: string): string | undefined => {
     try {
       const v = cfg.get<string>(key);
@@ -200,7 +200,7 @@ export function showProviderStatus(vscode: Vscode): LlmConfig {
   const config = providerForHost(vscode);
   const v = validateConfig(config);
   const body = `## LLM Provider\n\n${describeConfig(config)} — ${v.ok ? "ready" : `missing: ${v.missing.join(", ")}`}.\n`;
-  const panel = vscode.window.createWebviewPanel("changepilot.provider", "LLM Provider", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.provider", "LLM Provider", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(body)}</pre></body></html>`;
   return config;
 }
@@ -212,7 +212,7 @@ export function showEvidence(
   changedFiles: string[] = [...new Set(queue.map((d) => d.file))],
 ): EvidenceBundle[] {
   const bundles = collectQueueEvidence(queue, emptyContext({ changedFiles }));
-  const panel = vscode.window.createWebviewPanel("changepilot.evidence", "Evidence", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.evidence", "Evidence", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(renderQueueEvidenceMarkdown(bundles))}</pre></body></html>`;
   return bundles;
 }
@@ -225,7 +225,7 @@ export function showEvidence(
 export function showAlternatives(vscode: Vscode, decision: DecisionPoint): AlternativeSet {
   const set = generateAlternatives(decision);
   const body = `${renderAlternativesMarkdown(set)}\n${renderPlanMarkdown(planForAlternative(set))}`;
-  const panel = vscode.window.createWebviewPanel("changepilot.alternatives", "Alternatives", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.alternatives", "Alternatives", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(body)}</pre></body></html>`;
   return set;
 }
@@ -238,7 +238,7 @@ export function pickStudioAlternative(
 ): AlternativeSet {
   const next = pickAlternative(set, alternativeId);
   const body = `${renderAlternativesMarkdown(next)}\n${renderPlanMarkdown(planForAlternative(next))}`;
-  const panel = vscode.window.createWebviewPanel("changepilot.alternatives", "Alternatives", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.alternatives", "Alternatives", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(body)}</pre></body></html>`;
   return next;
 }
@@ -254,7 +254,7 @@ export function previewImplementation(
 ): void {
   const plan = planForAlternative(set, alternativeId ?? set.pickedId ?? undefined);
   const body = `${renderPlanMarkdown(plan)}\n${renderPatchMarkdown(generatePatch(plan))}`;
-  const panel = vscode.window.createWebviewPanel("changepilot.implement", "Implementation", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.implement", "Implementation", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(body)}</pre></body></html>`;
 }
 
@@ -276,7 +276,7 @@ export function applyPickedAlternative(
     alternativeId: opts.alternativeId ?? set.pickedId ?? undefined,
     verify: { runCommands: false },
   });
-  const panel = vscode.window.createWebviewPanel("changepilot.implement", "Implementation", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.implement", "Implementation", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(renderImplementResultMarkdown(result))}</pre></body></html>`;
   return result;
 }
@@ -299,7 +299,7 @@ export function showOutputBundle(
     evidence,
     changedFiles: [...new Set(queue.map((d) => d.file))],
   });
-  const panel = vscode.window.createWebviewPanel("changepilot.bundle", "Output Bundle", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.bundle", "Output Bundle", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(renderBundleMarkdown(bundle))}</pre></body></html>`;
   return bundle;
 }
@@ -307,7 +307,7 @@ export function showOutputBundle(
 /** Decisions panel: ranked queue with Accept / Reject / Investigate actions. */
 export function showDecisions(vscode: Vscode, diffText: string): DecisionPoint[] {
   const queue = decisionsForDiff(diffText);
-  const panel = vscode.window.createWebviewPanel("changepilot.decisions", "Decisions", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.decisions", "Decisions", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(renderDecisionsMarkdown(queue))}</pre></body></html>`;
   return queue;
 }
@@ -363,7 +363,7 @@ async function promptReject(vscode: Vscode): Promise<{ reason: RejectReason; con
 }
 
 /**
- * Registers changepilot.decision{Accept,Reject,Investigate} commands over a
+ * Registers deci.decision{Accept,Reject,Investigate} commands over a
  * live queue. `onChange` receives the queue after every transition so the
  * host can re-render decorations + panels. Reject prompts for reason +
  * constraint and aborts when either is missing.
@@ -378,19 +378,19 @@ export function registerDecisionCommands(
     queue = next;
     onChange(queue);
   };
-  vscode.commands.registerCommand("changepilot.decisionAccept", (id: unknown) => {
+  vscode.commands.registerCommand("deci.decisionAccept", (id: unknown) => {
     if (typeof id === "string") set(acceptDecision(queue, id));
   });
-  vscode.commands.registerCommand("changepilot.decisionInvestigate", (id: unknown) => {
+  vscode.commands.registerCommand("deci.decisionInvestigate", (id: unknown) => {
     if (typeof id === "string") set(investigateDecision(queue, id));
   });
-  vscode.commands.registerCommand("changepilot.decisionReject", async (id: unknown) => {
+  vscode.commands.registerCommand("deci.decisionReject", async (id: unknown) => {
     if (typeof id !== "string") return;
     const answer = await promptReject(vscode);
     if (!answer) return;
     set(rejectDecision(queue, id, answer.reason, answer.constraint));
   });
-  vscode.commands.registerCommand("changepilot.showDecisions", (diffText: unknown) =>
+  vscode.commands.registerCommand("deci.showDecisions", (diffText: unknown) =>
     showDecisions(vscode, typeof diffText === "string" ? diffText : ""),
   );
   return { get: () => queue };
@@ -430,7 +430,7 @@ export function createListProvider(initial: PanelNode[] = []): {
 
 /** US-012: History panel (local in-memory entries, newest last). */
 export function showHistory(vscode: Vscode, entries: HistoryEntry[]): HistoryEntry[] {
-  const panel = vscode.window.createWebviewPanel("changepilot.history", "History", 1, {});
+  const panel = vscode.window.createWebviewPanel("deci.history", "History", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(renderHistoryMarkdown(entries))}</pre></body></html>`;
   return entries;
 }
@@ -462,46 +462,46 @@ export function activate(vscode: Vscode): {
   history: { list(): HistoryEntry[]; note(label: string, diffText: string, queue: DecisionPoint[]): void };
 } {
   const providers = {
-    "changepilot.review": createListProvider(buildReviewNodes(buildReviewMap(""))),
-    "changepilot.decisions": createListProvider(buildDecisionNodes([])),
-    "changepilot.alternatives": createListProvider(buildAlternativeNodes(null)),
-    "changepilot.evidence": createListProvider(buildEvidenceNodes([])),
-    "changepilot.history": createListProvider(buildHistoryNodes([])),
+    "deci.review": createListProvider(buildReviewNodes(buildReviewMap(""))),
+    "deci.decisions": createListProvider(buildDecisionNodes([])),
+    "deci.alternatives": createListProvider(buildAlternativeNodes(null)),
+    "deci.evidence": createListProvider(buildEvidenceNodes([])),
+    "deci.history": createListProvider(buildHistoryNodes([])),
   } as Record<PanelViewId, ReturnType<typeof createListProvider>>;
   for (const view of PANEL_VIEWS) {
     vscode.window.registerTreeDataProvider?.(view.id, providers[view.id]);
   }
   let entries: HistoryEntry[] = [];
   const syncHistory = (): void => {
-    providers["changepilot.history"].set(buildHistoryNodes(entries));
+    providers["deci.history"].set(buildHistoryNodes(entries));
   };
   const queue = decisionsForDiff("");
   registerDecisionCommands(vscode, queue, (next) => {
     applyDecisionDecorations(vscode, next);
-    providers["changepilot.decisions"].set(buildDecisionNodes(next));
+    providers["deci.decisions"].set(buildDecisionNodes(next));
   });
-  vscode.commands.registerCommand("changepilot.showReviewMap", (diffText: unknown) => {
+  vscode.commands.registerCommand("deci.showReviewMap", (diffText: unknown) => {
     const diff = typeof diffText === "string" ? diffText : "";
     const q = decisionsForDiff(diff);
-    providers["changepilot.review"].set(buildReviewNodes(buildReviewMap(diff)));
-    providers["changepilot.decisions"].set(buildDecisionNodes(q));
+    providers["deci.review"].set(buildReviewNodes(buildReviewMap(diff)));
+    providers["deci.decisions"].set(buildDecisionNodes(q));
     entries = noteReview(entries, `review ${entries.length + 1}`, diff, q);
     syncHistory();
     return showReviewMap(vscode, diff);
   });
-  vscode.commands.registerCommand("changepilot.showHistory", () => showHistory(vscode, entries));
-  vscode.commands.registerCommand("changepilot.showEvidenceFor", (queueArg: unknown) => {
+  vscode.commands.registerCommand("deci.showHistory", () => showHistory(vscode, entries));
+  vscode.commands.registerCommand("deci.showEvidenceFor", (queueArg: unknown) => {
     const q = Array.isArray(queueArg) ? (queueArg as DecisionPoint[]) : decisionsForDiff("");
     return showEvidence(vscode, q);
   });
-  vscode.commands.registerCommand("changepilot.showBundleFor", (diff: unknown, queueArg: unknown) =>
+  vscode.commands.registerCommand("deci.showBundleFor", (diff: unknown, queueArg: unknown) =>
     showOutputBundle(
       vscode,
       typeof diff === "string" ? diff : "",
       Array.isArray(queueArg) ? (queueArg as DecisionPoint[]) : [],
     ),
   );
-  vscode.commands.registerCommand("changepilot.showProvider", () => showProviderStatus(vscode));
+  vscode.commands.registerCommand("deci.showProvider", () => showProviderStatus(vscode));
   return {
     providers,
     history: {

@@ -1,10 +1,10 @@
 {
-  "name": "changepilot",
+  "name": "deci",
   "version": "0.1.0",
   "description": "Turn massive AI-generated code changes into a small set of engineering decisions humans actually need to review.",
   "type": "module",
   "bin": {
-    "changepilot": "./dist/cli.js"
+    "deci": "./dist/cli.js"
   },
   "main": "./dist/vscode/extension.js",
   "scripts": {
@@ -24,117 +24,117 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "changepilot",
-          "title": "ChangePilot",
-          "icon": "resources/changepilot.svg"
+          "id": "deci",
+          "title": "Deci",
+          "icon": "resources/deci.svg"
         }
       ]
     },
     "views": {
-      "changepilot": [
+      "deci": [
         {
-          "id": "changepilot.review",
+          "id": "deci.review",
           "name": "Review"
         },
         {
-          "id": "changepilot.decisions",
+          "id": "deci.decisions",
           "name": "Decisions"
         },
         {
-          "id": "changepilot.alternatives",
+          "id": "deci.alternatives",
           "name": "Alternatives"
         },
         {
-          "id": "changepilot.evidence",
+          "id": "deci.evidence",
           "name": "Evidence"
         },
         {
-          "id": "changepilot.history",
+          "id": "deci.history",
           "name": "History"
         }
       ]
     },
     "commands": [
       {
-        "command": "changepilot.showReviewMap",
-        "title": "ChangePilot: Show Review Map"
+        "command": "deci.showReviewMap",
+        "title": "Deci: Show Review Map"
       },
       {
-        "command": "changepilot.showDecisions",
-        "title": "ChangePilot: Show Decisions"
+        "command": "deci.showDecisions",
+        "title": "Deci: Show Decisions"
       },
       {
-        "command": "changepilot.showAlternatives",
-        "title": "ChangePilot: Show Alternatives (A/B/C)"
+        "command": "deci.showAlternatives",
+        "title": "Deci: Show Alternatives (A/B/C)"
       },
       {
-        "command": "changepilot.showEvidence",
-        "title": "ChangePilot: Show Evidence"
+        "command": "deci.showEvidence",
+        "title": "Deci: Show Evidence"
       },
       {
-        "command": "changepilot.showEvidenceFor",
-        "title": "ChangePilot: Show Evidence for Queue"
+        "command": "deci.showEvidenceFor",
+        "title": "Deci: Show Evidence for Queue"
       },
       {
-        "command": "changepilot.showBundleFor",
-        "title": "ChangePilot: Show Output Bundle"
+        "command": "deci.showBundleFor",
+        "title": "Deci: Show Output Bundle"
       },
       {
-        "command": "changepilot.showHistory",
-        "title": "ChangePilot: Show History"
+        "command": "deci.showHistory",
+        "title": "Deci: Show History"
       },
       {
-        "command": "changepilot.showProvider",
-        "title": "ChangePilot: Show LLM Provider"
+        "command": "deci.showProvider",
+        "title": "Deci: Show LLM Provider"
       },
       {
-        "command": "changepilot.decisionAccept",
-        "title": "ChangePilot: Accept Decision"
+        "command": "deci.decisionAccept",
+        "title": "Deci: Accept Decision"
       },
       {
-        "command": "changepilot.decisionReject",
-        "title": "ChangePilot: Reject Decision"
+        "command": "deci.decisionReject",
+        "title": "Deci: Reject Decision"
       },
       {
-        "command": "changepilot.decisionInvestigate",
-        "title": "ChangePilot: Investigate Decision"
+        "command": "deci.decisionInvestigate",
+        "title": "Deci: Investigate Decision"
       }
     ],
     "configuration": {
-      "title": "ChangePilot",
+      "title": "Deci",
       "properties": {
-        "changepilot.provider": {
+        "deci.provider": {
           "type": "string",
           "enum": ["openai-byok", "ollama", "vscode-lm"],
           "default": "ollama",
           "description": "LLM provider. Local AST/diff processing always stays local."
         },
-        "changepilot.openai.baseURL": {
+        "deci.openai.baseURL": {
           "type": "string",
           "default": "",
           "description": "OpenAI-compatible base URL for BYOK mode."
         },
-        "changepilot.openai.apiKey": {
+        "deci.openai.apiKey": {
           "type": "string",
           "default": "",
           "description": "API key for BYOK mode."
         },
-        "changepilot.openai.model": {
+        "deci.openai.model": {
           "type": "string",
           "default": "",
           "description": "Model for BYOK mode."
         },
-        "changepilot.ollama.baseURL": {
+        "deci.ollama.baseURL": {
           "type": "string",
           "default": "http://localhost:11434",
           "description": "Ollama base URL for local mode."
         },
-        "changepilot.ollama.model": {
+        "deci.ollama.model": {
           "type": "string",
           "default": "",
           "description": "Ollama local model."
         },
-        "changepilot.vscodeLm.model": {
+        "deci.vscodeLm.model": {
           "type": "string",
           "default": "",
           "description": "VS Code Language Model ID."

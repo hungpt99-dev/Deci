@@ -214,9 +214,7 @@ node dist/cli.js analyze --file ./verify-e2e-004.diff --static-only
 
 Exit codes: `0` clean/low, `2` decisions-required (Critical/High present), `1` error.
 
-VS Code: this repo contains `src/vscode/extension.ts` and `changepilot.*` view/command contributions in `package.json`. Packaging (`.vsix`) and marketplace publishing are not configured in this snapshot — see Roadmap.
-
-> Naming note: the public project brand is **Deci**. The npm package name, CLI binary (`changepilot`), VS Code view/command IDs (`changepilot.*`), and config keys (`changepilot.provider`, `CHANGEPILOT_*` env vars) currently use the earlier `ChangePilot` identifier. Source identifiers were intentionally left untouched for this release.
+VS Code: this repo contains `src/vscode/extension.ts` and `deci.*` view/command contributions in `package.json`. Packaging (`.vsix`) and marketplace publishing are not configured in this snapshot — see Roadmap.
 
 ## Configuration
 
@@ -224,27 +222,27 @@ All fields optional unless noted. Precedence: explicit settings/flags → enviro
 
 | Setting / Flag | Env | Default | Required? |
 |---|---|---|---|
-| `changepilot.provider` / `--provider` | `CHANGEPILOT_PROVIDER` | `ollama` | No |
-| `changepilot.openai.baseURL` / `--openai-base-url` | `CHANGEPILOT_OPENAI_BASE_URL` | `https://api.openai.com/v1` | Yes for `openai-byok` |
-| `changepilot.openai.apiKey` | `CHANGEPILOT_OPENAI_API_KEY` | `""` | Yes for `openai-byok` |
-| `changepilot.openai.model` / `--openai-model` | `CHANGEPILOT_OPENAI_MODEL` | `gpt-4o-mini` | Yes for `openai-byok` |
-| `changepilot.ollama.baseURL` | `CHANGEPILOT_OLLAMA_BASE_URL` | `http://localhost:11434` | Yes for `ollama` |
-| `changepilot.ollama.model` / `--ollama-model` | `CHANGEPILOT_OLLAMA_MODEL` | `llama3.1` | Yes for `ollama` |
-| `changepilot.vscodeLm.model` | `CHANGEPILOT_VSCODE_LM_MODEL` | editor default | No |
+| `deci.provider` / `--provider` | `DECI_PROVIDER` | `ollama` | No |
+| `deci.openai.baseURL` / `--openai-base-url` | `DECI_OPENAI_BASE_URL` | `https://api.openai.com/v1` | Yes for `openai-byok` |
+| `deci.openai.apiKey` | `DECI_OPENAI_API_KEY` | `""` | Yes for `openai-byok` |
+| `deci.openai.model` / `--openai-model` | `DECI_OPENAI_MODEL` | `gpt-4o-mini` | Yes for `openai-byok` |
+| `deci.ollama.baseURL` | `DECI_OLLAMA_BASE_URL` | `http://localhost:11434` | Yes for `ollama` |
+| `deci.ollama.model` / `--ollama-model` | `DECI_OLLAMA_MODEL` | `llama3.1` | Yes for `ollama` |
+| `deci.vscodeLm.model` | `DECI_VSCODE_LM_MODEL` | editor default | No |
 
 Examples:
 
 ```bash
 # BYOK (OpenAI-compatible)
-export CHANGEPILOT_PROVIDER=openai-byok
-export CHANGEPILOT_OPENAI_BASE_URL=https://api.openai.com/v1
-export CHANGEPILOT_OPENAI_API_KEY=YOUR_API_KEY
-export CHANGEPILOT_OPENAI_MODEL=gpt-4o-mini
+export DECI_PROVIDER=openai-byok
+export DECI_OPENAI_BASE_URL=https://api.openai.com/v1
+export DECI_OPENAI_API_KEY=YOUR_API_KEY
+export DECI_OPENAI_MODEL=gpt-4o-mini
 
 # Ollama local
-export CHANGEPILOT_PROVIDER=ollama
-export CHANGEPILOT_OLLAMA_BASE_URL=http://localhost:11434
-export CHANGEPILOT_OLLAMA_MODEL=llama3.1
+export DECI_PROVIDER=ollama
+export DECI_OLLAMA_BASE_URL=http://localhost:11434
+export DECI_OLLAMA_MODEL=llama3.1
 ```
 
 API keys live only in your environment / VS Code settings — never commit them. CLI JSON output redacts the key as `"***"`. See Privacy.

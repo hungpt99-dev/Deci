@@ -47,7 +47,7 @@ function isProvider(v: string): v is ProviderId {
   return (PROVIDERS as string[]).includes(v);
 }
 
-/** Flat settings bag (VS Code `changepilot.*` or CLI flags); all fields optional. */
+/** Flat settings bag (VS Code `deci.*` or CLI flags); all fields optional. */
 export interface ProviderSettingsInput {
   provider?: string;
   openaiBaseURL?: string;
@@ -65,21 +65,21 @@ export function resolveProviderConfig(
 ): LlmConfig {
   const pick = (...vals: Array<string | undefined>): string =>
     clean(vals.find((v) => clean(v) !== undefined && clean(v) !== "") ?? "");
-  const providerRaw = pick(settings.provider, env.CHANGEPILOT_PROVIDER, "ollama");
+  const providerRaw = pick(settings.provider, env.DECI_PROVIDER, "ollama");
   const provider: ProviderId = isProvider(providerRaw) ? providerRaw : "ollama";
   return {
     provider,
     openai: {
-      baseURL: pick(settings.openaiBaseURL, env.CHANGEPILOT_OPENAI_BASE_URL, DEFAULT_OPENAI_BASE_URL),
-      apiKey: pick(settings.openaiApiKey, env.CHANGEPILOT_OPENAI_API_KEY, ""),
-      model: pick(settings.openaiModel, env.CHANGEPILOT_OPENAI_MODEL, DEFAULT_OPENAI_MODEL),
+      baseURL: pick(settings.openaiBaseURL, env.DECI_OPENAI_BASE_URL, DEFAULT_OPENAI_BASE_URL),
+      apiKey: pick(settings.openaiApiKey, env.DECI_OPENAI_API_KEY, ""),
+      model: pick(settings.openaiModel, env.DECI_OPENAI_MODEL, DEFAULT_OPENAI_MODEL),
     },
     ollama: {
-      baseURL: pick(settings.ollamaBaseURL, env.CHANGEPILOT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_BASE_URL),
-      model: pick(settings.ollamaModel, env.CHANGEPILOT_OLLAMA_MODEL, DEFAULT_OLLAMA_MODEL),
+      baseURL: pick(settings.ollamaBaseURL, env.DECI_OLLAMA_BASE_URL, DEFAULT_OLLAMA_BASE_URL),
+      model: pick(settings.ollamaModel, env.DECI_OLLAMA_MODEL, DEFAULT_OLLAMA_MODEL),
     },
     vscodeLm: {
-      model: pick(settings.vscodeLmModel, env.CHANGEPILOT_VSCODE_LM_MODEL, "") || null,
+      model: pick(settings.vscodeLmModel, env.DECI_VSCODE_LM_MODEL, "") || null,
     },
   };
 }

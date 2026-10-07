@@ -50,7 +50,7 @@ This runs `tsc` then Node's test runner over `dist/**/*.test.js`. Add or update 
 
 ## Changes
 
-Avoid unrelated refactoring. Do not rename packages, binaries (`changepilot`), VS Code IDs, or config keys for consistency alone — those are frozen for compatibility and renamed only via an explicit maintainer decision.
+Avoid unrelated refactoring. Do not rename packages, binaries (`deci`), VS Code IDs, or config keys for consistency alone — those are frozen for compatibility and renamed only via an explicit maintainer decision.
 
 ## Architecture
 

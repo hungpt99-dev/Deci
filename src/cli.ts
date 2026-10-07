@@ -34,7 +34,7 @@ import {
 } from "./llm.js";
 
 function usage(): string {
-  return `Usage: changepilot analyze [--diff <range>] [--range <range>] [--base <branch>] [--staged] [--file <path>] [--ticket <url|id|path|text>] [--doc <url|path|text>] [--json] [--verify] [--static-only] [--provider <openai-byok|ollama|vscode-lm>] [--openai-model <m>] [--ollama-model <m>] [--openai-base-url <url>]\n\nDiff: working tree (default, git diff HEAD), --staged, or branch-vs-base (--diff/--range/--base, local git only). No git repo? use --file <diff|source-file|folder>.\nExit codes: 0 clean/low, 2 decisions-required (Critical/High present), 1 error.`;
+  return `Usage: deci analyze [--diff <range>] [--range <range>] [--base <branch>] [--staged] [--file <path>] [--ticket <url|id|path|text>] [--doc <url|path|text>] [--json] [--verify] [--static-only] [--provider <openai-byok|ollama|vscode-lm>] [--openai-model <m>] [--ollama-model <m>] [--openai-base-url <url>]\n\nDiff: working tree (default, git diff HEAD), --staged, or branch-vs-base (--diff/--range/--base, local git only). No git repo? use --file <diff|source-file|folder>.\nExit codes: 0 clean/low, 2 decisions-required (Critical/High present), 1 error.`;
 }
 
 function argValue(args: string[], flag: string): string | null {

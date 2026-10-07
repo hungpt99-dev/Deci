@@ -234,7 +234,7 @@ export function gutterMarksFor(queue: DecisionPoint[], lineOfFile: (file: string
 export function hoverMarkdownFor(d: DecisionPoint): string {
   const ev = d.evidenceLinks.map((e) => `- [${e.label}](${e.ref})`).join("\n");
   const cmd = (action: string) =>
-    `command:changepilot.decision${action}?${encodeURIComponent(JSON.stringify([d.id]))}`;
+    `command:deci.decision${action}?${encodeURIComponent(JSON.stringify([d.id]))}`;
   return [
     `**${d.severity}** ${d.findingType} — ${d.status}`,
     ``,

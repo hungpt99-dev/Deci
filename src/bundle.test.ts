@@ -94,6 +94,6 @@ describe("bundle", () => {
     assert.match(md, /## Test plan/);
     assert.match(md, /## Rollback plan \(text only/);
     assert.match(md, /never auto-reverts/);
-    assert.doesNotMatch(md, /command:changepilot\.\w*[Rr]evert/);
+    assert.doesNotMatch(md, /command:deci\.\w*[Rr]evert/);
   });
 });

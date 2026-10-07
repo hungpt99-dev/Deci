@@ -21,7 +21,7 @@ describe("resolveProviderConfig", () => {
   it("honors vscode setting + env with settings winning", () => {
     const c = resolveProviderConfig(
       { provider: "openai-byok", openaiModel: "gpt-4o" },
-      { CHANGEPILOT_PROVIDER: "ollama", CHANGEPILOT_OPENAI_MODEL: "o3" },
+      { DECI_PROVIDER: "ollama", DECI_OPENAI_MODEL: "o3" },
     );
     assert.equal(c.provider, "openai-byok");
     assert.equal(c.openai.model, "gpt-4o");
@@ -33,10 +33,10 @@ describe("resolveProviderConfig", () => {
     const c = resolveProviderConfig(
       {},
       {
-        CHANGEPILOT_PROVIDER: "openai-byok",
-        CHANGEPILOT_OPENAI_BASE_URL: "https://proxy/v1",
-        CHANGEPILOT_OPENAI_API_KEY: "sk-x",
-        CHANGEPILOT_OLLAMA_MODEL: "qwen2.5-coder",
+        DECI_PROVIDER: "openai-byok",
+        DECI_OPENAI_BASE_URL: "https://proxy/v1",
+        DECI_OPENAI_API_KEY: "sk-x",
+        DECI_OLLAMA_MODEL: "qwen2.5-coder",
       },
     );
     assert.equal(c.openai.baseURL, "https://proxy/v1");
@@ -53,7 +53,7 @@ describe("validateConfig/describe", () => {
     assert.deepEqual(validateConfig(lm), { ok: true, missing: [] });
   });
   it("never leaks the api key in describe", () => {
-    const c = resolveProviderConfig({ provider: "openai-byok" }, { CHANGEPILOT_OPENAI_API_KEY: "sk-secret" });
+    const c = resolveProviderConfig({ provider: "openai-byok" }, { DECI_OPENAI_API_KEY: "sk-secret" });
     assert.ok(!describeConfig(c).includes("sk-secret"));
     assert.ok(describeConfig(c).includes("key set"));
   });
@@ -68,7 +68,7 @@ describe("complete routing", () => {
     };
     const c: LlmConfig = resolveProviderConfig(
       { provider: "openai-byok" },
-      { CHANGEPILOT_OPENAI_BASE_URL: "https://proxy/v1", CHANGEPILOT_OPENAI_API_KEY: "sk-x", CHANGEPILOT_OPENAI_MODEL: "m" },
+      { DECI_OPENAI_BASE_URL: "https://proxy/v1", DECI_OPENAI_API_KEY: "sk-x", DECI_OPENAI_MODEL: "m" },
     );
     assert.equal(await complete(msg("hello"), c, { fetch }), "hi");
     assert.equal(seen.url, "https://proxy/v1/chat/completions");

@@ -8,11 +8,11 @@ import type { EvidenceBundle } from "./evidence.js";
 import type { ReviewMap } from "./reviewMap.js";
 
 export type PanelViewId =
-  | "changepilot.review"
-  | "changepilot.decisions"
-  | "changepilot.alternatives"
-  | "changepilot.evidence"
-  | "changepilot.history";
+  | "deci.review"
+  | "deci.decisions"
+  | "deci.alternatives"
+  | "deci.evidence"
+  | "deci.history";
 
 export interface PanelViewDef {
   id: PanelViewId;
@@ -20,11 +20,11 @@ export interface PanelViewDef {
 }
 
 export const PANEL_VIEWS: PanelViewDef[] = [
-  { id: "changepilot.review", title: "Review" },
-  { id: "changepilot.decisions", title: "Decisions" },
-  { id: "changepilot.alternatives", title: "Alternatives" },
-  { id: "changepilot.evidence", title: "Evidence" },
-  { id: "changepilot.history", title: "History" },
+  { id: "deci.review", title: "Review" },
+  { id: "deci.decisions", title: "Decisions" },
+  { id: "deci.alternatives", title: "Alternatives" },
+  { id: "deci.evidence", title: "Evidence" },
+  { id: "deci.history", title: "History" },
 ];
 
 export interface PanelNode {
@@ -43,14 +43,14 @@ export function buildReviewNodes(map: ReviewMap): PanelNode[] {
   const head = node(
     `${map.totalLoc} LOC · ${map.files.length} files · ${map.modules.length} modules`,
     `Critical ${d.Critical.files} · High ${d.High.files} · Medium ${d.Medium.files} · Low ${d.Low.files} · Verified ${d.Verified.files}`,
-    "changepilot.showReviewMap",
+    "deci.showReviewMap",
   );
   if (map.files.length === 0) return [head, node("No changes — diff is empty.")];
   const top = map.files
     .slice()
     .sort((a, b) => b.added + b.removed - (a.added + a.removed))
     .slice(0, 10)
-    .map((f) => node(`${f.path} (+${f.added}/-${f.removed})`, f.risk, "changepilot.showReviewMap"));
+    .map((f) => node(`${f.path} (+${f.added}/-${f.removed})`, f.risk, "deci.showReviewMap"));
   return [head, ...top];
 }
 
@@ -58,7 +58,7 @@ export function buildReviewNodes(map: ReviewMap): PanelNode[] {
 export function buildDecisionNodes(queue: DecisionPoint[]): PanelNode[] {
   if (queue.length === 0) return [node("No decisions — nothing consequential found.")];
   return queue.map((d) =>
-    node(`${d.severity} · ${d.findingType}`, `${d.file} · ${d.status}`, "changepilot.showDecisions"),
+    node(`${d.severity} · ${d.findingType}`, `${d.file} · ${d.status}`, "deci.showDecisions"),
   );
 }
 
@@ -69,7 +69,7 @@ export function buildAlternativeNodes(set: AlternativeSet | null): PanelNode[] {
     node(
       `${o.label}: ${o.title}`,
       `${o.complexity} · ${o.changeSize} · +${o.locAdded}/-${o.locRemoved}`,
-      "changepilot.showAlternatives",
+      "deci.showAlternatives",
       [set.decisionId, o.id],
     ),
   );
@@ -79,7 +79,7 @@ export function buildAlternativeNodes(set: AlternativeSet | null): PanelNode[] {
 export function buildEvidenceNodes(bundles: EvidenceBundle[]): PanelNode[] {
   if (bundles.length === 0) return [node("No evidence — run analysis first.")];
   return bundles.map((b) =>
-    node(`${b.decisionId}`, `${b.present}/${b.items.length} present`, "changepilot.showEvidence"),
+    node(`${b.decisionId}`, `${b.present}/${b.items.length} present`, "deci.showEvidence"),
   );
 }
 
@@ -124,12 +124,12 @@ export function appendHistory(entries: HistoryEntry[], entry: HistoryEntry, cap 
 }
 
 export function buildHistoryNodes(entries: HistoryEntry[]): PanelNode[] {
-  if (entries.length === 0) return [node("No reviews yet — run ChangePilot analysis first.")];
+  if (entries.length === 0) return [node("No reviews yet — run Deci analysis first.")];
   return entries
     .slice()
     .reverse()
     .map((e) =>
-      node(`${e.label} · ${e.risk}`, `${e.loc} LOC · ${e.files} files · ${e.decisions} decisions`, "changepilot.showHistory"),
+      node(`${e.label} · ${e.risk}`, `${e.loc} LOC · ${e.files} files · ${e.decisions} decisions`, "deci.showHistory"),
     );
 }
 

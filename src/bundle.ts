@@ -31,7 +31,7 @@ export interface TestPlan {
 }
 
 export interface RollbackPlan {
-  /** Ordered manual steps, text only. Never executed by ChangePilot. */
+  /** Ordered manual steps, text only. Never executed by Deci. */
   steps: string[];
 }
 
@@ -186,7 +186,7 @@ export function buildRollbackPlan(changedFiles: string[]): RollbackPlan {
       `Republish previous contract for ${contracts.slice(0, 3).join(", ")}${contracts.length > 3 ? " …" : ""} and notify consumers before redeploy.`,
     );
   steps.push("Re-run full verify (build + unit tests + lint) on the rolled-back tree before merging.");
-  steps.push("Manual steps only — ChangePilot never auto-reverts in MVP.");
+  steps.push("Manual steps only — Deci never auto-reverts in MVP.");
   return { steps };
 }
 

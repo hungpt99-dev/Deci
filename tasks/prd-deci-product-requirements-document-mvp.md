@@ -1,18 +1,18 @@
-# ChangePilot — Product Requirements Document (MVP)
+# Deci — Product Requirements Document (MVP)
 
 ## 1. Overview
 
-**Product name:** ChangePilot
+**Product name:** Deci
 **One-liner:** Turn massive AI-generated code changes into a small set of engineering decisions humans actually need to review.
 **Philosophy:** AI generates. AI verifies. Humans decide. AI executes.
 **Core loop:** GENERATE → UNDERSTAND → COMPRESS → VERIFY → DECIDE → CHOOSE → IMPLEMENT → VERIFY → LEARN
 
-ChangePilot is a local-first IDE extension (VS Code) + thin CLI wrapper that helps developers review AI-generated changes without reading every line. It treats review as an engineering-decision problem, not a line-inspection problem.
+Deci is a local-first IDE extension (VS Code) + thin CLI wrapper that helps developers review AI-generated changes without reading every line. It treats review as an engineering-decision problem, not a line-inspection problem.
 
 Source concept: `DOC.md` (DecisionFlow platform vision, 1841 lines). This PRD scopes MVP per locked decisions below.
 
 ### Locked decisions
-1. Name: ChangePilot
+1. Name: Deci
 2. Surface: VS Code + CLI (no IntelliJ, no GitHub App for MVP)
 3. Architecture: Local-first, no backend, configurable LLM
 4. Languages: Multi-language AST from start (deviation from DOC §28-29 which deferred this)
@@ -28,7 +28,7 @@ Source concept: `DOC.md` (DecisionFlow platform vision, 1841 lines). This PRD sc
 ## 2. Goals / Non-Goals
 
 **Goals:**
-- Prove: developer reviews 2000+ LOC AI change significantly faster with ChangePilot than plain git diff.
+- Prove: developer reviews 2000+ LOC AI change significantly faster with Deci than plain git diff.
 - Compress review surface: Review Map + auto-verified section + ranked decision points.
 - Preserve human authority on consequential decisions; never auto-decide architecture/security/data-consistency.
 - Run fully local-first; code never required to leave machine for MVP.
@@ -50,14 +50,14 @@ All three served equally in MVP (no persona-gated features):
 ## 4. MVP Surfaces
 
 ### 4.1 VS Code extension (primary)
-Activity Bar: ChangePilot → Review | Decisions | Alternatives | Evidence | History.
+Activity Bar: Deci → Review | Decisions | Alternatives | Evidence | History.
 - Review Map panel (see §6).
 - Inline decision decoration in editor (gutter icon + hover card with Accept / Reject / Investigate).
 - Alternative Studio webview (compare A/B/C + trade-off table).
 - Implementation plan preview + Generate patch + Verify output.
 
 ### 4.2 CLI (thin wrapper)
-`changepilot analyze [--diff] [--ticket] [--doc]` → prints Review Map JSON + markdown + decision list to stdout; reuses same core engine as extension. No implement/verify-write in CLI for MVP; analyze only. Exit codes: 0 clean/low, 2 decisions-required, 1 error.
+`deci analyze [--diff] [--ticket] [--doc]` → prints Review Map JSON + markdown + decision list to stdout; reuses same core engine as extension. No implement/verify-write in CLI for MVP; analyze only. Exit codes: 0 clean/low, 2 decisions-required, 1 error.
 
 ## 5. Inputs
 
@@ -91,18 +91,18 @@ On Reject + constraint, generate 2–3 alternatives with complexity/performance/
 Every analysis produces: impact summary, risk classification, test plan (what ran + what to add), rollback plan **text only** (e.g. "revert commits X, re-run migration down Y, republish contract Z"). No execute-revert button in MVP.
 
 ### F8 LLM provider switch
-Settings: `changepilot.provider: openai-byok | ollama | vscode-lm`. BYOK accepts OpenAI-compatible baseURL + key (OpenAI/Anthropic/Google/OpenRouter/Azure/Bedrock). Ollama default local model configurable. VS Code LM API uses editor's entitlement. No code exfiltration beyond chosen provider; local AST/diff processing always local.
+Settings: `deci.provider: openai-byok | ollama | vscode-lm`. BYOK accepts OpenAI-compatible baseURL + key (OpenAI/Anthropic/Google/OpenRouter/Azure/Bedrock). Ollama default local model configurable. VS Code LM API uses editor's entitlement. No code exfiltration beyond chosen provider; local AST/diff processing always local.
 
 ## 7. Non-Functional Requirements
 
 - Local-first: works offline except chosen LLM call; no mandatory backend.
 - Latency: Review Map for 2000 LOC in <60s on typical laptop (excluding LLM wait); incremental re-analysis <15s.
-- Privacy: never send code to ChangePilot servers (none exist); ticket/doc fetch only on user action.
+- Privacy: never send code to Deci servers (none exist); ticket/doc fetch only on user action.
 - Reliability: false-negative avoidance prioritized over compression; uncertain → surface as decision, never silently verify.
 
 ## 8. UX Flow (happy path)
 
-1. Dev generates 4000 LOC via agent → opens ChangePilot → picks diff range + pastes ticket + doc.
+1. Dev generates 4000 LOC via agent → opens Deci → picks diff range + pastes ticket + doc.
 2. Sees Review Map (e.g. 3842 LOC, 74 files, 2 Critical/5 High … human ~12 min vs 45).
 3. Auto-verified 1900 LOC collapsed; reviews 8 decisions inline.
 4. Rejects tx-boundary change with constraint → picks Transactional Outbox → approves plan → patch applied → full verify green → Review Complete (decisions: 3, auto-verified %, final risk LOW).
@@ -181,14 +181,14 @@ As a tech lead, I want impact/risk/test/rollback bundle.
 
 ### US-009: LLM provider switch BYOK Ollama VSCode-LM
 As a developer, I want configurable LLM provider.
-- [ ] Setting `changepilot.provider: openai-byok | ollama | vscode-lm` works
+- [ ] Setting `deci.provider: openai-byok | ollama | vscode-lm` works
 - [ ] BYOK accepts OpenAI-compatible baseURL plus key
 - [ ] Ollama local model configurable, works offline except LLM call
 - [ ] No code sent beyond chosen provider, AST/diff stays local
 
 ### US-010: CLI thin analyze wrapper
 As a developer, I want CLI analyze for Review Map plus decisions.
-- [ ] `changepilot analyze [--diff] [--ticket] [--doc]` prints Review Map JSON plus markdown plus decision list
+- [ ] `deci analyze [--diff] [--ticket] [--doc]` prints Review Map JSON plus markdown plus decision list
 - [ ] Reuses same core engine as extension
 - [ ] Exit codes 0 clean/low, 2 decisions-required, 1 error
 - [ ] No implement/verify-write in CLI for MVP
@@ -201,8 +201,8 @@ As a developer, I want diff range plus ticket plus doc inputs.
 - [ ] Manual file/folder pick fallback when no git repo
 
 ### US-012: VS Code panels Review Decisions Alternatives Evidence History
-As a developer, I want ChangePilot Activity Bar views.
-- [ ] Activity Bar ChangePilot with Review, Decisions, Alternatives, Evidence, History
+As a developer, I want Deci Activity Bar views.
+- [ ] Activity Bar Deci with Review, Decisions, Alternatives, Evidence, History
 - [ ] Alternative Studio webview compares A/B/C
 - [ ] Implementation plan preview plus Generate patch plus Verify output visible
 - [ ] Works local-first with no backend required

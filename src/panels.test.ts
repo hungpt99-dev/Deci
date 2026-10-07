@@ -44,7 +44,7 @@ describe("panels", () => {
   it("exposes all five Activity Bar views", () => {
     assert.deepEqual(
       PANEL_VIEWS.map((v) => v.id),
-      ["changepilot.review", "changepilot.decisions", "changepilot.alternatives", "changepilot.evidence", "changepilot.history"],
+      ["deci.review", "deci.decisions", "deci.alternatives", "deci.evidence", "deci.history"],
     );
   });
 
@@ -89,7 +89,7 @@ describe("panels", () => {
     assert.equal(h2.length, 2);
     assert.equal(buildHistoryNodes(h2)[0]?.label.startsWith("review-2"), true);
     assert.match(renderHistoryMarkdown(h2), /\| When \| Review \|/);
-    assert.equal(buildHistoryNodes([])[0]?.label, "No reviews yet — run ChangePilot analysis first.");
+    assert.equal(buildHistoryNodes([])[0]?.label, "No reviews yet — run Deci analysis first.");
     const capped = appendHistory([e1], e2, 1);
     assert.equal(capped.length, 1);
     assert.equal(capped[0]?.label, "review-2");

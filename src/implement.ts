@@ -65,7 +65,7 @@ export interface AgentAdapter {
 }
 
 function patchContentFor(plan: ImplementationPlan, file: string, action: string): string {
-  const note = `// ChangePilot(local): ${action} "${plan.title}" for ${plan.decisionId} [${plan.label}]`;
+  const note = `// Deci(local): ${action} "${plan.title}" for ${plan.decisionId} [${plan.label}]`;
   if (action === "update-tests")
     return `${note}\n// covers new behavior + regression for the old path\n`;
   if (action === "verify") return "";

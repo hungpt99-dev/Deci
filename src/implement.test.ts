@@ -71,7 +71,7 @@ describe("implement", () => {
     const fs = memFs({ "src/pay.ts": "const a = 1;\n" });
     const patch = applyPatch(plan, fs);
     assert.ok(patch.appliedAt);
-    assert.ok((fs.store.get("src/pay.ts") as string).includes("ChangePilot(local)"));
+    assert.ok((fs.store.get("src/pay.ts") as string).includes("Deci(local)"));
     assert.ok((fs.store.get("src/pay.ts") as string).includes("const a = 1;"));
     assert.ok(fs.store.has("src/pay.test.ts")); // sibling test scaffold
   });
