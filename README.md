@@ -214,7 +214,15 @@ node dist/cli.js analyze --file ./verify-e2e-004.diff --static-only
 
 Exit codes: `0` clean/low, `2` decisions-required (Critical/High present), `1` error.
 
-VS Code: this repo contains `src/vscode/extension.ts` and `deci.*` view/command contributions in `package.json`. Packaging (`.vsix`) and marketplace publishing are not configured in this snapshot — see Roadmap.
+VS Code: this repo contains `src/vscode/extension.ts` (editor-agnostic core) plus `src/vscode/host.ts` (real host entry, `package.json` main). Install the packaged extension:
+
+```bash
+npm run build
+npm run package   # produces deci-<version>.vsix via vsce
+code --install-extension deci-0.1.0.vsix
+```
+
+Or in VS Code: Extensions view → `...` → Install from VSIX. Marketplace publishing is not configured — see Roadmap.
 
 ## Configuration
 

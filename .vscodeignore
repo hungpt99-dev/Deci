@@ -1,0 +1,16 @@
+.vscode/**
+.vscode-test/**
+src/**
+tasks/**
+.ralph-tui/**
+.github/**
+DOC.md
+verify-e2e-004.diff
+*.vsix
+dist/**/*.test.js
+dist/**/*.test.d.ts
+dist/**/*.test.js.map
+**/.gitignore
+**/.vscodeignore
+node_modules/**
+.git/**

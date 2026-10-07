@@ -1,17 +1,24 @@
 {
   "name": "deci",
+  "displayName": "Deci",
   "version": "0.1.0",
+  "publisher": "hungpt99-dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hungpt99-dev/Deci.git"
+  },
   "description": "Turn massive AI-generated code changes into a small set of engineering decisions humans actually need to review.",
   "type": "module",
   "bin": {
     "deci": "./dist/cli.js"
   },
-  "main": "./dist/vscode/extension.js",
+  "main": "./dist/vscode/host.js",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
-    "analyze": "node dist/cli.js analyze"
+    "analyze": "node dist/cli.js analyze",
+    "package": "vsce package"
   },
   "engines": {
     "node": ">=20",
@@ -105,7 +112,11 @@
       "properties": {
         "deci.provider": {
           "type": "string",
-          "enum": ["openai-byok", "ollama", "vscode-lm"],
+          "enum": [
+            "openai-byok",
+            "ollama",
+            "vscode-lm"
+          ],
           "default": "ollama",
           "description": "LLM provider. Local AST/diff processing always stays local."
         },
@@ -144,6 +155,8 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^26.6.4"
+    "@types/node": "^26.6.4",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^4.0.0"
   }
 }

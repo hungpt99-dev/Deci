@@ -5,6 +5,7 @@ node_modules/
 dist/
 build/
 out/
+*.vsix
 
 # Env and secrets — never commit
 .env
