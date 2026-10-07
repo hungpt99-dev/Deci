@@ -1,0 +1,145 @@
+{
+  "name": "ChangePilot — Product Requirements Document (MVP)",
+  "description": "**Product name:** ChangePilot **One-liner:** Turn massive AI-generated code changes into a small set of engineering decisions humans actually need to review. **Philosophy:** AI generates. AI verifies. Humans decide. AI executes. **Core loop:** GENERATE → UNDERSTAND → COMPRESS → VERIFY → DECIDE → CHOOSE → IMPLEMENT → VERIFY → LEARN",
+  "branchName": "feature/changepilot-mvp",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Review Map shows where to spend attention",
+      "description": "As a reviewer, I want a Review Map so I skip line-walk. - [ ] Shows LOC changed, files, modules, services - [ ] Shows risk distribution Critical/High/Medium/Low/Verified - [ ] Shows estimated human review time vs full-diff estimate - [ ] Renders in <5s after analysis completes",
+      "acceptanceCriteria": [],
+      "priority": 1,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-002",
+      "title": "Semantic change detection for TypeScript and Java",
+      "description": "As a reviewer, I want semantic findings not line diffs. - [ ] Detects business, architecture, data, security, reliability, performance categories - [ ] Ships generic AST plus TS and Java adapters via pluggable interface - [ ] Each finding emits type, before/after, impact, confidence - [ ] Uncertain items surface as decisions, never silently dropped",
+      "acceptanceCriteria": [],
+      "priority": 2,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-003",
+      "title": "Auto-verification removes mechanical checks",
+      "description": "As a reviewer, I want builds/tests/lint auto-verified. - [ ] Runs build, unit tests, lint/static analysis, formatting per language - [ ] Runs API schema unchanged check and forbidden-dependency check - [ ] Shows pass/fail per check with log links on failure - [ ] Verified code collapses but remains expandable on demand",
+      "acceptanceCriteria": [],
+      "priority": 3,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-004",
+      "title": "Ranked human decision queue",
+      "description": "As a reviewer, I want ranked Accept/Reject/Investigate queue. - [ ] Queue ranks by severity with evidence links and confidence - [ ] Actions Accept / Reject / Investigate available inline and in panel - [ ] Reject requires reason plus free-text constraint - [ ] Gutter icon plus hover card works in editor",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-005",
+      "title": "Evidence gathering per decision",
+      "description": "As a reviewer, I want evidence for each decision. - [ ] Collects current/related code, tests, git history, docs/ADRs, contracts, schema/config - [ ] Includes ticket and design-doc excerpts when provided - [ ] Shows present/missing per evidence item - [ ] Unreachable ticket/doc marks missing, does not block analysis",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-006",
+      "title": "Alternative Studio generates options on Reject",
+      "description": "As a developer, I want 2-3 alternatives when I reject. - [ ] Generates 2-3 alternatives with complexity/performance/consistency/change-size - [ ] Shows pros/cons and trade-off table in A/B/C compare view - [ ] Constraint from Reject flows into generation - [ ] User can pick one to proceed to implementation plan",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-007",
+      "title": "AI implementation applies chosen patch and re-verifies",
+      "description": "As a developer, I want picked alternative applied as patch. - [ ] Shows implementation plan with file steps and +/-LOC estimate - [ ] Generate patch applies via Local Agent Adapter only for MVP - [ ] Full re-verify runs after apply - [ ] Only affected decisions re-queued after re-verify",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-008",
+      "title": "Full output bundle with rollback text",
+      "description": "As a tech lead, I want impact/risk/test/rollback bundle. - [ ] Every analysis produces impact summary and risk classification - [ ] Produces test plan of what ran plus what to add - [ ] Produces rollback plan as text only - [ ] No execute-revert or auto-revert button present in MVP",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-009",
+      "title": "LLM provider switch BYOK Ollama VSCode-LM",
+      "description": "As a developer, I want configurable LLM provider. - [ ] Setting `changepilot.provider: openai-byok | ollama | vscode-lm` works - [ ] BYOK accepts OpenAI-compatible baseURL plus key - [ ] Ollama local model configurable, works offline except LLM call - [ ] No code sent beyond chosen provider, AST/diff stays local",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-010",
+      "title": "CLI thin analyze wrapper",
+      "description": "As a developer, I want CLI analyze for Review Map plus decisions. - [ ] `changepilot analyze [--diff] [--ticket] [--doc]` prints Review Map JSON plus markdown plus decision list - [ ] Reuses same core engine as extension - [ ] Exit codes 0 clean/low, 2 decisions-required, 1 error - [ ] No implement/verify-write in CLI for MVP",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-011",
+      "title": "Git diff plus ticket plus doc inputs",
+      "description": "As a developer, I want diff range plus ticket plus doc inputs. - [ ] Supports working tree / staged / branch-vs-base ranges via local git only - [ ] Ticket URL/ID prompt optional, fetched text used as evidence - [ ] Design doc path/URL optional, excerpts used as constraints - [ ] Manual file/folder pick fallback when no git repo",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-012",
+      "title": "VS Code panels Review Decisions Alternatives Evidence History",
+      "description": "As a developer, I want ChangePilot Activity Bar views. - [ ] Activity Bar ChangePilot with Review, Decisions, Alternatives, Evidence, History - [ ] Alternative Studio webview compares A/B/C - [ ] Implementation plan preview plus Generate patch plus Verify output visible - [ ] Works local-first with no backend required",
+      "acceptanceCriteria": [],
+      "priority": 4,
+      "passes": true,
+      "labels": [],
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    }
+  ],
+  "metadata": {
+    "createdAt": "2026-10-07T02:58:30.280Z",
+    "version": "1.0.0",
+    "sourcePrd": "prd-changepilot-product-requirements-document-mvp.md",
+    "updatedAt": "2026-10-07T03:45:33.840Z"
+  }
+}

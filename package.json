@@ -1,0 +1,149 @@
+{
+  "name": "changepilot",
+  "version": "0.1.0",
+  "description": "Turn massive AI-generated code changes into a small set of engineering decisions humans actually need to review.",
+  "type": "module",
+  "bin": {
+    "changepilot": "./dist/cli.js"
+  },
+  "main": "./dist/vscode/extension.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test \"dist/**/*.test.js\"",
+    "analyze": "node dist/cli.js analyze"
+  },
+  "engines": {
+    "node": ">=20",
+    "vscode": "^1.85.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "changepilot",
+          "title": "ChangePilot",
+          "icon": "resources/changepilot.svg"
+        }
+      ]
+    },
+    "views": {
+      "changepilot": [
+        {
+          "id": "changepilot.review",
+          "name": "Review"
+        },
+        {
+          "id": "changepilot.decisions",
+          "name": "Decisions"
+        },
+        {
+          "id": "changepilot.alternatives",
+          "name": "Alternatives"
+        },
+        {
+          "id": "changepilot.evidence",
+          "name": "Evidence"
+        },
+        {
+          "id": "changepilot.history",
+          "name": "History"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "changepilot.showReviewMap",
+        "title": "ChangePilot: Show Review Map"
+      },
+      {
+        "command": "changepilot.showDecisions",
+        "title": "ChangePilot: Show Decisions"
+      },
+      {
+        "command": "changepilot.showAlternatives",
+        "title": "ChangePilot: Show Alternatives (A/B/C)"
+      },
+      {
+        "command": "changepilot.showEvidence",
+        "title": "ChangePilot: Show Evidence"
+      },
+      {
+        "command": "changepilot.showEvidenceFor",
+        "title": "ChangePilot: Show Evidence for Queue"
+      },
+      {
+        "command": "changepilot.showBundleFor",
+        "title": "ChangePilot: Show Output Bundle"
+      },
+      {
+        "command": "changepilot.showHistory",
+        "title": "ChangePilot: Show History"
+      },
+      {
+        "command": "changepilot.showProvider",
+        "title": "ChangePilot: Show LLM Provider"
+      },
+      {
+        "command": "changepilot.decisionAccept",
+        "title": "ChangePilot: Accept Decision"
+      },
+      {
+        "command": "changepilot.decisionReject",
+        "title": "ChangePilot: Reject Decision"
+      },
+      {
+        "command": "changepilot.decisionInvestigate",
+        "title": "ChangePilot: Investigate Decision"
+      }
+    ],
+    "configuration": {
+      "title": "ChangePilot",
+      "properties": {
+        "changepilot.provider": {
+          "type": "string",
+          "enum": ["openai-byok", "ollama", "vscode-lm"],
+          "default": "ollama",
+          "description": "LLM provider. Local AST/diff processing always stays local."
+        },
+        "changepilot.openai.baseURL": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI-compatible base URL for BYOK mode."
+        },
+        "changepilot.openai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for BYOK mode."
+        },
+        "changepilot.openai.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model for BYOK mode."
+        },
+        "changepilot.ollama.baseURL": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama base URL for local mode."
+        },
+        "changepilot.ollama.model": {
+          "type": "string",
+          "default": "",
+          "description": "Ollama local model."
+        },
+        "changepilot.vscodeLm.model": {
+          "type": "string",
+          "default": "",
+          "description": "VS Code Language Model ID."
+        }
+      }
+    }
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.4"
+  }
+}

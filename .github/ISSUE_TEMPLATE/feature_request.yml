@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest an improvement to Deci.
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What engineering-decision problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What should Deci do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: user
+    attributes:
+      label: Intended user
+      options:
+        - Developer
+        - Reviewer
+        - Architect / Tech Lead
+        - All three
+  - type: textarea
+    id: value
+    attributes:
+      label: Expected value
+      description: How does this reduce time-to-confidence or risk?
