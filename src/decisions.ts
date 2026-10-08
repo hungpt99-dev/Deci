@@ -45,6 +45,12 @@ export interface DecisionPoint {
   before: string;
   after: string;
   evidenceLinks: EvidenceLink[];
+  /** 1-2 evidence-backed strings, e.g. "touches auth path src/auth.ts, confirmed by diff". */
+  riskReasons?: string[];
+  /** Populated when confidence<0.6 or finding.uncertain; each states gap + next action. */
+  unknowns?: string[];
+  /** Original finding ids folded into this decision when file+findingType group. */
+  groupedIds?: string[];
   rejectReason?: RejectReason;
   /** Free-text constraint from Reject, e.g. "payment must remain strongly consistent". */
   constraint?: string;
@@ -91,7 +97,13 @@ export function evidenceFor(file: string, id: string): EvidenceLink[] {
 
 function toDecision(f: SemanticFinding, n: number): DecisionPoint {
   const id = `D${n + 1} ${f.id}`;
-  return {
+  const beforeLines = f.before.trim() ? f.before.split("\n").length : 0;
+  const afterLines = f.after.trim() ? f.after.split("\n").length : 0;
+  const testPath = guessTestPath(f.file);
+  const sensitive = /(auth|login|session|password|crypto|payment|billing|migrat|\.sql$|prisma|drizzle|typeorm)/i.test(f.file)
+    ? "touches auth/data/migration surface"
+    : "no auth/data/migration surface";
+  const d: DecisionPoint = {
     id,
     severity: severityFor(f.type),
     status: "pending",
@@ -105,14 +117,52 @@ function toDecision(f: SemanticFinding, n: number): DecisionPoint {
     before: f.before,
     after: f.after,
     evidenceLinks: evidenceFor(f.file, f.id),
+    riskReasons: [
+      `touches ${f.file} (+${afterLines}/-${beforeLines}, ${beforeLines + afterLines} excerpt line(s)), confirmed by diff; no test at ${testPath} — add regression test.`,
+      `${f.type} (${f.category}) at confidence ${f.confidence.toFixed(2)}, ${sensitive}, per finding ${f.id}`,
+    ],
   };
+  if (f.confidence < 0.6 || f.uncertain)
+    d.unknowns = [
+      `Unknown — insufficient evidence: ${f.type} in ${f.file} (confidence ${f.confidence.toFixed(2)}); gap: no test at ${testPath}; impact: ${f.impact} next: confirm with human review of ${f.file}`,
+    ];
+  return d;
 }
 
 /** Findings → severity-ranked queue (severity, then confidence desc). Pure. */
 export function buildDecisions(findings: SemanticFinding[]): DecisionPoint[] {
-  return findings
-    .map(toDecision)
-    .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.confidence - a.confidence);
+  const groups = new Map<string, SemanticFinding[]>();
+  for (const found of findings) {
+    const key = `${found.file}::${found.type}`;
+    const g = groups.get(key);
+    if (g) g.push(found);
+    else groups.set(key, [found]);
+  }
+  const unsorted = [...groups.values()].map((members) => {
+    const rep = members.slice().sort((a, b) => b.confidence - a.confidence)[0] as SemanticFinding;
+    const impact = [...new Set(members.map((m) => m.impact).filter(Boolean))].join(" / ") || rep.impact;
+    const before = [...new Set(members.map((m) => m.before).filter((s) => s.trim()))].join("\n---\n") || rep.before;
+    const after = [...new Set(members.map((m) => m.after).filter((s) => s.trim()))].join("\n---\n") || rep.after;
+    const merged: SemanticFinding = {
+      ...rep,
+      impact,
+      before,
+      after,
+      uncertain: members.some((m) => m.uncertain),
+    };
+    const d = toDecision(merged, 0);
+    if (members.length > 1) d.groupedIds = members.map((m) => m.id);
+    // Preserve max-confidence representative id for evidence links; decision IDs assigned after sort below.
+    d.evidenceLinks = evidenceFor(rep.file, rep.id);
+    (d as { __repId?: string }).__repId = rep.id;
+    return d;
+  });
+  unsorted.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.confidence - a.confidence);
+  return unsorted.map((d, i) => {
+    const repId = (d as { __repId?: string }).__repId ?? d.id;
+    const { __repId: _drop, ...rest } = d as DecisionPoint & { __repId?: string };
+    return { ...rest, id: `D${i + 1} ${repId}` };
+  });
 }
 
 function update(queue: DecisionPoint[], id: string, patch: Partial<DecisionPoint>): DecisionPoint[] {
@@ -240,7 +290,7 @@ export function hoverMarkdownFor(d: DecisionPoint): string {
     ``,
     `${d.impact}`,
     ``,
-    `Confidence: **${d.confidence.toFixed(2)}**${d.uncertain ? " (uncertain — needs human look)" : ""}`,
+    `Confidence: **${d.confidence.toFixed(2)}**${d.uncertain ? " (uncertain — needs human look)" : ""} (evidence: \`${d.file}\`, finding \`#${d.id}\`)`,
     d.after ? `Change: \`${d.after.slice(0, 200)}\`` : ``,
     ``,
     `Evidence:`,

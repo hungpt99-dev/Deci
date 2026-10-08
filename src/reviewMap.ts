@@ -10,6 +10,8 @@ export interface FileChange {
   module: string;
   service: string;
   risk: RiskLevel;
+  /** Why this risk; cites the diff path that set it. */
+  why?: string;
 }
 
 export interface RiskBucket {
@@ -96,12 +98,25 @@ export function parseUnifiedDiff(diffText: string): Omit<FileChange, "module" | 
 
 export function buildReviewMap(diffText: string): ReviewMap {
   const parsed = parseUnifiedDiff(diffText);
-  const files: FileChange[] = parsed.map((f) => ({
-    ...f,
-    module: toModule(f.path),
-    service: toService(f.path),
-    risk: classifyRisk(f.path),
-  }));
+  const files: FileChange[] = parsed.map((f) => {
+    const risk = classifyRisk(f.path);
+    const lines = `+${f.added}/-${f.removed} (${f.added + f.removed} lines)`;
+    const why =
+      risk === "Critical"
+        ? `Critical — \`${f.path}\` ${lines} matches critical pattern (auth/data/migration/secrets), confirmed by diff path.`
+        : risk === "High"
+          ? `High — \`${f.path}\` ${lines} matches contract/data-layer pattern, confirmed by diff path.`
+          : risk === "Low"
+            ? `Low — \`${f.path}\` ${lines} matches low-risk pattern (tests/docs/config), confirmed by diff path.`
+            : `Medium — \`${f.path}\` ${lines} matched no critical/high/low pattern, confirmed by diff path.`;
+    return {
+      ...f,
+      module: toModule(f.path),
+      service: toService(f.path),
+      risk,
+      why,
+    };
+  });
   const totalAdded = files.reduce((n, f) => n + f.added, 0);
   const totalRemoved = files.reduce((n, f) => n + f.removed, 0);
   const totalLoc = totalAdded + totalRemoved;

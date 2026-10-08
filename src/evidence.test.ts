@@ -4,6 +4,7 @@ import {
   collectEvidence,
   collectQueueEvidence,
   emptyContext,
+  gradeFor,
   relatedCodeFor,
   renderEvidenceMarkdown,
   renderQueueEvidenceMarkdown,
@@ -74,6 +75,21 @@ describe("evidence", () => {
       ctx({ ticket: { text: "t".repeat(2000), unreachable: false, ref: "T-1" } }),
     );
     assert.ok((b.items.find((i) => i.kind === "ticket")?.excerpt?.length ?? 0) <= 501);
+  });
+
+  it("grades present code/test/contract as SUPPORTED, history/ticket as INFERRED, absent as MISSING", () => {
+    assert.equal(gradeFor("code", true, "src/auth.ts").grade, "SUPPORTED");
+    assert.match(gradeFor("code", true, "src/auth.ts").reason, /src\/auth\.ts/);
+    assert.equal(gradeFor("test", true, "src/auth.test.ts").grade, "SUPPORTED");
+    assert.equal(gradeFor("contract", true, "openapi.yaml").grade, "SUPPORTED");
+    assert.equal(gradeFor("git-history", true, "src/auth.ts").grade, "INFERRED");
+    assert.equal(gradeFor("ticket", true, "AUTH-1").grade, "INFERRED");
+    const m = gradeFor("test", false, "src/missing.test.ts");
+    assert.equal(m.grade, "MISSING");
+    assert.match(m.reason, /next:/i);
+    const b = collectEvidence({ id: "D1 x", file: "src/auth.ts" }, ctx());
+    assert.ok(b.items.every((i) => i.grade && i.reason));
+    assert.equal(b.present + b.missing, b.items.length);
   });
 
   it("renders ✓/✗ per item and queue sections per decision", () => {

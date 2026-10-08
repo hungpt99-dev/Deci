@@ -211,14 +211,19 @@ export interface FullVerifyOptions {
 }
 
 /** Full verify: static checks always run; shell checks run or skip per opts. */
-export function runFullVerify(diffText: string, opts: FullVerifyOptions = {}): VerifyReport {
+export function runFullVerify(
+  diffText: string,
+  opts: FullVerifyOptions = {},
+  exec: ExecFn = defaultExec,
+): VerifyReport {
   const paths = changedPathsOf(diffText);
   const staticChecks = [checkApiSchemaUnchanged(diffText), checkForbiddenDeps(diffText, opts.forbidden)];
   const specs = planChecks(paths);
+  const runExec = opts.exec ?? exec;
   const commandChecks =
     opts.runCommands === false
       ? specs.map((s) => toSkip(s, "Deferred in this surface — run CLI `analyze --verify` for shell checks."))
-      : runCommandChecks(specs, opts.exec ?? defaultExec);
+      : runCommandChecks(specs, runExec);
   const checks = [...staticChecks, ...commandChecks];
   const passed = checks.filter((c) => c.status === "pass").length;
   const failed = checks.filter((c) => c.status === "fail").length;

@@ -91,6 +91,22 @@ describe("decisions", () => {
     assert.match(hover, /Investigate/);
   });
 
+  it("groups same file+findingType with groupedIds and populates unknowns when uncertain", () => {
+    const q = buildDecisions([
+      f({ id: "g:1", file: "src/auth.ts", type: "SECURITY_DECISION" }),
+      f({ id: "g:2", file: "src/auth.ts", type: "SECURITY_DECISION" }),
+      f({ id: "g:3", file: "src/other.ts", type: "SECURITY_DECISION", confidence: 0.4, uncertain: true }),
+    ]);
+    assert.equal(q.length, 2);
+    const grouped = q.find((d) => d.file === "src/auth.ts");
+    assert.deepEqual(grouped?.groupedIds, ["g:1", "g:2"]);
+    assert.ok((grouped?.riskReasons?.length ?? 0) >= 1);
+    assert.match(grouped?.riskReasons?.[0] ?? "", /src\/auth\.ts/);
+    const low = q.find((d) => d.file === "src/other.ts");
+    assert.ok(low?.unknowns?.length);
+    assert.match(low?.unknowns?.[0] ?? "", /Unknown.*insufficient evidence.*next:/);
+  });
+
   it("summary counts pending Critical/High; empty renders cleanly", () => {
     const q = queueOf();
     const s = decisionSummary(q);

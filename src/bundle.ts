@@ -39,6 +39,8 @@ export interface OutputBundle {
   impact: ImpactSummary;
   risk: OverallRisk;
   riskReason: string;
+  /** Evidence-backed factors behind risk: blast radius, reversibility, data/auth involvement. */
+  riskReasons?: string[];
   testPlan: TestPlan;
   rollback: RollbackPlan;
   generatedAt: string;
@@ -55,6 +57,38 @@ function topFilesOf(map: ReviewMap, cap = 5): string[] {
     .map((f) => f.path);
 }
 
+const SENSITIVE_RE = /auth|login|session|password|crypto|payment|billing|migrat|\.sql$|prisma|drizzle|typeorm/i;
+
+/** Shared risk factors: blast radius, reversibility, data/auth involvement. Paths cite the diff. */
+function riskReasonsFor(queue: DecisionPoint[], report: VerifyReport | null): string[] {
+  const pending = queue.filter((d) => d.status === "pending");
+  const files = [...new Set(pending.map((d) => d.file))];
+  const failed = report?.failed ?? 0;
+  const reasons: string[] = [];
+  reasons.push(
+    pending.length > 0
+      ? `Blast radius: ${pending.length} pending decision(s) across ${files.length} file(s) (${files.slice(0, 3).join(", ") || "—"}), confirmed by diff paths.`
+      : `Blast radius: no pending decisions — nothing awaiting a human, confirmed by queue.`,
+  );
+  const failedNames = (report?.checks ?? []).filter((c) => c.status === "fail").map((c) => c.label);
+  reasons.push(
+    failed > 0
+      ? `Reversibility: ${failed} verify check(s) failing (${failedNames.slice(0, 3).join(", ") || "see verify report"}) — not safely reversible until green, per verify report.`
+      : report && report.skipped > 0 && report.passed > 0
+        ? `Reversibility: verify green with ${report.skipped} skipped (${report.passed} green) — standard revert applies; re-run full verify after rollback, per verify report.`
+        : report && report.skipped > 0
+          ? `Reversibility: verify skipped (${report.skipped} skipped, none green) — manual review before merge, per verify report.`
+          : `Reversibility: ${report ? "verify green" : "verify not run"} — standard revert applies; re-run full verify after rollback.`,
+  );
+  const sensitive = files.filter((p) => SENSITIVE_RE.test(p));
+  reasons.push(
+    sensitive.length > 0
+      ? `Data/auth involvement: ${sensitive.slice(0, 3).join(", ")} touch auth/data/migration surface, confirmed by diff paths — needs human review.`
+      : `Data/auth involvement: no auth/data/migration paths in pending queue, confirmed by diff paths.`,
+  );
+  return reasons;
+}
+
 /**
  * Pure: overall risk from pending queue first, verify failures second.
  * Decided (accepted/rejected/investigating) decisions do not raise risk —
@@ -63,14 +97,15 @@ function topFilesOf(map: ReviewMap, cap = 5): string[] {
 export function overallRiskFor(
   queue: DecisionPoint[],
   report: VerifyReport | null,
-): { risk: OverallRisk; reason: string } {
+): { risk: OverallRisk; reason: string; reasons: string[] } {
   const pending = queue.filter((d) => d.status === "pending");
   const crit = pending.filter((d) => d.severity === "Critical").length;
   const high = pending.filter((d) => d.severity === "High").length;
   const med = pending.filter((d) => d.severity === "Medium").length;
   const failed = report?.failed ?? 0;
+  const reasons = riskReasonsFor(queue, report);
   if (crit > 0)
-    return { risk: "Critical", reason: `${crit} pending Critical decision(s) need a human.` };
+    return { risk: "Critical", reason: `${crit} pending Critical decision(s) need a human.`, reasons };
   if (high > 0 || failed > 0)
     return {
       risk: "High",
@@ -78,8 +113,10 @@ export function overallRiskFor(
         high > 0
           ? `${high} pending High decision(s) need a human.`
           : `${failed} verify check(s) failing — stays in human review.`,
+      reasons,
     };
-  if (med > 0) return { risk: "Medium", reason: `${med} pending Medium decision(s); no Critical/High open.` };
+  if (med > 0)
+    return { risk: "Medium", reason: `${med} pending Medium decision(s); no Critical/High open.`, reasons };
   if (queue.length === 0)
     return {
       risk: report && !report.allPass ? "High" : "Low",
@@ -87,8 +124,9 @@ export function overallRiskFor(
         report && !report.allPass
           ? `${report.failed} verify check(s) failing — stays in human review.`
           : "No consequential decisions detected.",
+      reasons,
     };
-  return { risk: "Low", reason: "No pending Critical/High/Medium decisions." };
+  return { risk: "Low", reason: "No pending Critical/High/Medium decisions.", reasons };
 }
 
 /** Pure: one-line impact summary from map + queue + verify outcome. */
@@ -197,11 +235,12 @@ export function buildOutputBundle(
   report: VerifyReport | null,
   opts: { evidence?: EvidenceBundle[]; changedFiles?: string[] } = {},
 ): OutputBundle {
-  const { risk, reason } = overallRiskFor(queue, report);
+  const { risk, reason, reasons } = overallRiskFor(queue, report);
   return {
     impact: buildImpactSummary(map, queue, report),
     risk,
     riskReason: reason,
+    riskReasons: reasons,
     testPlan: buildTestPlan(queue, report, opts.evidence ?? []),
     rollback: buildRollbackPlan(opts.changedFiles ?? [...new Set(queue.map((d) => d.file))]),
     generatedAt: new Date().toISOString(),
@@ -224,6 +263,7 @@ export function renderBundleMarkdown(b: OutputBundle): string {
     `## Risk classification: ${b.risk}`,
     ``,
     `${b.riskReason}`,
+    ...(b.riskReasons ?? []).map((r) => `- ${r}`),
     ``,
     `## Test plan`,
     ``,

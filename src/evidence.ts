@@ -19,11 +19,17 @@ export type EvidenceKind =
 
 export type EvidenceStatus = "present" | "missing";
 
+export type EvidenceGrade = "VERIFIED" | "SUPPORTED" | "INFERRED" | "UNCERTAIN" | "MISSING";
+
 export interface EvidenceItem {
   kind: EvidenceKind;
   label: string;
   ref: string;
   status: EvidenceStatus;
+  /** Grading: direct hits SUPPORTED, indirect (history/ticket) INFERRED, absent MISSING. */
+  grade?: EvidenceGrade;
+  /** Why this grade; cites source path when present, states gap + next action when missing. */
+  reason?: string;
   /** Short excerpt (code line, log entry, ticket text). Truncated, never full file. */
   excerpt: string | null;
   note: string | null;
@@ -88,18 +94,49 @@ function safeExists(ctx: EvidenceContext, path: string): boolean {
   }
 }
 
+/**
+ * Pure: grade for an evidence kind. Present code/test/contract (and sibling/
+ * schema/doc/design hits) → SUPPORTED only with excerpt + diff hit, else
+ * UNCERTAIN; git-history/ticket → INFERRED (indirect signal); absent → MISSING
+ * with gap + next action. Counts unchanged — grade never flips present/missing.
+ */
+export function gradeFor(
+  kind: EvidenceKind,
+  found: boolean,
+  ref?: string,
+  opts?: { excerpt?: string | null; inDiff?: boolean },
+): { grade: EvidenceGrade; reason: string } {
+  const where = ref ? ` at \`${ref}\`` : "";
+  if (!found)
+    return { grade: "MISSING", reason: `Missing ${kind}${where} — not found; next: provide ${kind} evidence.` };
+  if (kind === "git-history" || kind === "ticket")
+    return { grade: "INFERRED", reason: `Inferred from ${kind}${where} — indirect signal, confirm with code/test.` };
+  if (opts !== undefined) {
+    const hasExcerpt = !!opts.excerpt?.trim();
+    const hit = opts.inDiff ?? false;
+    if (!hasExcerpt || !hit) {
+      const gap = !hit ? "not in diff" : "no readable excerpt";
+      return { grade: "UNCERTAIN", reason: `Uncertain ${kind}${where} — present but ${gap}; next: confirm with code/test.` };
+    }
+  }
+  return { grade: "SUPPORTED", reason: `Supported by ${kind}${where} — direct hit in diff or on disk.` };
+}
+
 function present(
   kind: EvidenceKind,
   label: string,
   ref: string,
   excerpt: string | null = null,
   note: string | null = null,
+  inDiff?: boolean,
 ): EvidenceItem {
-  return { kind, label, ref, status: "present", excerpt: excerpt ? trunc(excerpt) : null, note };
+  const g =
+    inDiff === undefined ? gradeFor(kind, true, ref) : gradeFor(kind, true, ref, { excerpt, inDiff });
+  return { kind, label, ref, status: "present", excerpt: excerpt ? trunc(excerpt) : null, note, grade: g.grade, reason: g.reason };
 }
 
 function missing(kind: EvidenceKind, label: string, ref: string, note: string): EvidenceItem {
-  return { kind, label, ref, status: "missing", excerpt: null, note };
+  return { kind, label, ref, status: "missing", excerpt: null, note, grade: "MISSING", reason: `${note} Next: provide ${kind} evidence for \`${ref}\`.` };
 }
 
 /** Same-module changed files excluding self; capped so bundles stay small. */
@@ -125,15 +162,16 @@ export function collectEvidence(
 
   // 1. Current code — changed file itself.
   const codeExcerpt = safeExcerpt(ctx, file);
-  if (ctx.changedFiles.includes(file) || safeExists(ctx, file))
-    items.push(present("code", "current code", file, codeExcerpt, null));
+  const codeInDiff = ctx.changedFiles.includes(file);
+  if (codeInDiff || safeExists(ctx, file))
+    items.push(present("code", "current code", file, codeExcerpt, null, codeInDiff));
   else items.push(missing("code", "current code", file, "File not in diff and not on disk."));
 
   // 2. Related code — same-module siblings from the diff.
   const related = relatedCodeFor(file, ctx.changedFiles);
   items.push(
     related.length > 0
-      ? present("related-code", "related code", related.join(", "), null, `${related.length} same-module file(s).`)
+      ? present("related-code", "related code", related.join(", "), null, `${related.length} same-module file(s).`, true)
       : missing("related-code", "related code", `module:${toModule(file)}`, "No same-module siblings in diff."),
   );
 
@@ -141,9 +179,10 @@ export function collectEvidence(
   const testPath = guessTestPath(file);
   const testInDiff = ctx.changedFiles.includes(testPath);
   const testOnDisk = testInDiff || safeExists(ctx, testPath);
+  const testExcerpt = testOnDisk ? safeExcerpt(ctx, testPath) : null;
   items.push(
     testOnDisk
-      ? present("test", "tests", testPath, safeExcerpt(ctx, testPath), testInDiff ? "Touched in this diff." : null)
+      ? present("test", "tests", testPath, testExcerpt, testInDiff ? "Touched in this diff." : null, testInDiff)
       : missing("test", "tests", testPath, "No sibling test found — consider adding one."),
   );
 
@@ -160,19 +199,22 @@ export function collectEvidence(
       : missing("git-history", "git history", file, "No recent history — new file or shallow clone."),
   );
 
-  // 5. Docs/ADRs.
+  // 5. Docs/ADRs — SUPPORTED only with excerpt + diff hit, else UNCERTAIN.
   const docs = ctx.docPaths.filter((p) => DOC_RE.test(p)).slice(0, 5);
+  const docExcerpt = docs.length > 0 ? safeExcerpt(ctx, docs[0] as string) : null;
+  const docInDiff = docs.some((p) => ctx.changedFiles.includes(p));
   items.push(
     docs.length > 0
-      ? present("doc-adr", "docs/ADRs", docs.join(", "), safeExcerpt(ctx, docs[0] as string), null)
+      ? present("doc-adr", "docs/ADRs", docs.join(", "), docExcerpt, null, docInDiff)
       : missing("doc-adr", "docs/ADRs", "docs/, README, ADR", "No project docs matched."),
   );
 
   // 6. Contracts.
   const contracts = ctx.changedFiles.filter((p) => CONTRACT_RE.test(p)).slice(0, 5);
+  const contractExcerpt = contracts.length > 0 ? safeExcerpt(ctx, contracts[0] as string) : null;
   items.push(
     contracts.length > 0
-      ? present("contract", "API contracts", contracts.join(", "), null, null)
+      ? present("contract", "API contracts", contracts.join(", "), contractExcerpt, null, true)
       : missing("contract", "API contracts", "openapi/proto/graphql", "No contract surface in diff."),
   );
 
@@ -180,7 +222,7 @@ export function collectEvidence(
   const schemas = ctx.changedFiles.filter((p) => SCHEMA_RE.test(p)).slice(0, 5);
   items.push(
     schemas.length > 0
-      ? present("schema-config", "schema/config", schemas.join(", "), safeExcerpt(ctx, schemas[0] as string), null)
+      ? present("schema-config", "schema/config", schemas.join(", "), safeExcerpt(ctx, schemas[0] as string), null, true)
       : missing("schema-config", "schema/config", "migrations/schema/config", "No schema/config in diff."),
   );
 
@@ -221,12 +263,14 @@ export function collectQueueEvidence(
 
 const ICON: Record<EvidenceStatus, string> = { present: "✓", missing: "✗" };
 
-/** Per-decision markdown: ✓/✗ per item with refs and short excerpts. */
+/** Per-decision markdown: ✓/✗ per item with grade, reason, refs and short excerpts. */
 export function renderEvidenceMarkdown(bundle: EvidenceBundle): string {
   const rows = bundle.items
     .map((i) => {
+      const grade = i.grade ?? "MISSING";
+      const reason = i.reason ?? "No grade reason recorded.";
       const extra = i.excerpt ? ` — \`${i.excerpt.slice(0, 120).replace(/\n/g, " ")}\`` : i.note ? ` — ${i.note}` : "";
-      return `| ${i.label} | ${ICON[i.status]} ${i.status} | \`${i.ref}\`${extra} |`;
+      return `| ${i.label} | ${ICON[i.status]} ${i.status} | ${grade} | \`${i.ref}\`${extra} — ${reason} |`;
     })
     .join("\n");
   return [
@@ -234,8 +278,8 @@ export function renderEvidenceMarkdown(bundle: EvidenceBundle): string {
     ``,
     `${ICON.present} ${bundle.present} present · ${ICON.missing} ${bundle.missing} missing`,
     ``,
-    `| Item | Status | Ref |`,
-    `| --- | --- | --- |`,
+    `| Item | Status | Grade | Ref |`,
+    `| --- | --- | --- | --- |`,
     rows,
     ``,
   ].join("\n");

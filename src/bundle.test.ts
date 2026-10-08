@@ -85,6 +85,21 @@ describe("bundle", () => {
     assert.ok(b.generatedAt);
   });
 
+  it("risk reasons cite blast radius, reversibility, data/auth factors", () => {
+    const q = buildDecisions([f({ id: "t:1" })]);
+    const r = overallRiskFor(q, reportFor(diff));
+    assert.equal(r.risk, "Critical");
+    assert.ok(r.reasons.length >= 3);
+    assert.ok(r.reasons.some((x) => /blast radius/i.test(x)));
+    assert.ok(r.reasons.some((x) => /reversib/i.test(x)));
+    assert.ok(r.reasons.some((x) => /data\/auth|auth\/data/i.test(x)));
+    assert.ok(r.reasons.some((x) => /src\/pay\.ts|diff paths|verify/i.test(x)));
+    const b = buildOutputBundle(buildReviewMap(diff), q, reportFor(diff));
+    assert.ok((b.riskReasons ?? []).length >= 3);
+    assert.ok(b.riskReason.length > 0);
+    assert.match(renderBundleMarkdown(b), /blast radius/i);
+  });
+
   it("markdown renders all four sections, text-only rollback, no revert runner", () => {
     const map = buildReviewMap(diff);
     const q = buildDecisions([f({ id: "t:1" })]);
