@@ -40,28 +40,9 @@
     "views": {
       "deci": [
         {
-          "id": "deci.review",
-          "name": "Review"
-        },
-        {
-          "id": "deci.decisions",
-          "name": "Decisions"
-        },
-        {
-          "id": "deci.alternatives",
-          "name": "Alternatives"
-        },
-        {
-          "id": "deci.evidence",
-          "name": "Evidence"
-        },
-        {
-          "id": "deci.history",
-          "name": "History"
-        },
-        {
-          "id": "deci.chat",
-          "name": "Chat"
+          "id": "deci.sidebar",
+          "type": "webview",
+          "name": "Deci"
         }
       ]
     },
@@ -153,8 +134,51 @@
       {
         "command": "deci.decisionInvestigate",
         "title": "Deci: Investigate Decision"
+      },
+      {
+        "command": "deci.newReview",
+        "title": "Deci: New Review…"
+      },
+      {
+        "command": "deci.openDiffReview",
+        "title": "Deci: Open Diff Review"
+      },
+      {
+        "command": "deci.openSettings",
+        "title": "Deci: Open Settings"
+      },
+      {
+        "command": "deci.openTests",
+        "title": "Deci: Open Tests & Verification"
+      },
+      {
+        "command": "deci.openHistory",
+        "title": "Deci: Open History"
+      },
+      {
+        "command": "deci.compareRuns",
+        "title": "Deci: Compare Runs"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "deci.newReview",
+          "when": "view == deci.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "deci.openDiffReview",
+          "when": "view == deci.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "deci.openSettings",
+          "when": "view == deci.sidebar",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Deci",
       "properties": {
@@ -197,6 +221,47 @@
           "type": "string",
           "default": "",
           "description": "VS Code Language Model ID."
+        },
+        "deci.routing": {
+          "type": "object",
+          "default": {},
+          "description": "Per-operation provider overrides, e.g. {\"fix\": \"openai\"}. Prefer the Deci Settings panel."
+        },
+        "deci.fallback": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Ordered provider fallback list. Prefer the Deci Settings panel."
+        },
+        "deci.allowCloudAi": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow prompts/code excerpts to leave the machine for cloud providers."
+        },
+        "deci.allowCloudFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow a failing local provider to fall back to a cloud provider."
+        },
+        "deci.verify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run verification after analysis."
+        },
+        "deci.staticOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Static-only analysis (no command execution)."
+        },
+        "deci.testTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "description": "Per-test wall-clock budget in milliseconds."
+        },
+        "deci.providers": {
+          "type": "object",
+          "default": {},
+          "description": "Per-provider { baseURL, model } overrides keyed by provider id. API keys live in SecretStorage. Prefer the Deci Settings panel."
         }
       }
     }

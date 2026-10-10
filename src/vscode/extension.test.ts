@@ -2,6 +2,8 @@
 // stub host. host.ts (real `vscode` module) cannot load headless — that seam
 // is BLOCKED on the VS Code runtime and covered by typecheck + packaging.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   activate,
@@ -34,7 +36,13 @@ type Vscode = Parameters<typeof showReviewMap>[0];
 interface Panel {
   viewType: string;
   title: string;
-  webview: { html: string };
+  webview: {
+    html: string;
+    messages: unknown[];
+    postMessage(m: unknown): void;
+    onDidReceiveMessage(cb: (msg: Record<string, unknown>) => void): void;
+    handler: ((msg: Record<string, unknown>) => void) | null;
+  };
 }
 interface Stub {
   vscode: Vscode;
@@ -56,7 +64,21 @@ function stubVscode(over: { pickPrefix?: string; inputBox?: string; editor?: unk
   const vscode = {
     window: {
       createWebviewPanel: (viewType: string, title: string, _column: number, _opts: unknown): Panel => {
-        const panel: Panel = { viewType, title, webview: { html: "" } };
+        const panel: Panel = {
+          viewType,
+          title,
+          webview: {
+            html: "",
+            messages: [],
+            postMessage(m: unknown) {
+              panel.webview.messages.push(m);
+            },
+            onDidReceiveMessage(cb: (msg: Record<string, unknown>) => void) {
+              panel.webview.handler = cb;
+            },
+            handler: null,
+          },
+        };
         panels.push(panel);
         return panel;
       },
@@ -69,6 +91,20 @@ function stubVscode(over: { pickPrefix?: string; inputBox?: string; editor?: unk
     },
     workspace: {
       getConfiguration: (_section: string) => ({ get: <T,>(_key: string): T | undefined => undefined }),
+      fs: (() => {
+        const files = new Map<string, string>();
+        return {
+          exists: (p: string) => files.has(p),
+          read: (p: string) => {
+            const c = files.get(p);
+            if (c === undefined) throw new Error(`missing ${p}`);
+            return c;
+          },
+          write: (p: string, c: string) => {
+            files.set(p, c);
+          },
+        };
+      })(),
     },
     languages: {
       registerHoverProvider: () => undefined,
@@ -230,5 +266,102 @@ describe("vscode decorations + commands", () => {
     const nodes = providers["deci.evidence"].getChildren() as Array<{ label?: unknown }>;
     assert.ok(nodes.length > 0);
     assert.ok(!String(nodes[0]?.label ?? "").includes("run analysis first"));
+  });
+});
+
+describe("interactive review UI", () => {
+  it("dead commands are bound now", () => {
+    const { vscode, commands } = stubVscode();
+    activate(vscode);
+    for (const id of ["deci.showAlternatives", "deci.showEvidence", "deci.newReview", "deci.openDiffReview", "deci.openSettings", "deci.openTests", "deci.openHistory", "deci.compareRuns"]) {
+      assert.ok(commands.has(id), id);
+    }
+  });
+
+  it("Diff Review opens with findings, strict CSP and nonce", async () => {
+    const { vscode, panels, commands } = stubVscode();
+    activate(vscode);
+    await commands.get("deci.openDiffReview")?.(DIFF);
+    const p = panels.find((x) => x.viewType === "deci.diffReview");
+    assert.ok(p, "diff panel created");
+    assert.ok(p.webview.html.includes("Diff Review"));
+    assert.ok(p.webview.html.includes("Content-Security-Policy") && p.webview.html.includes("nonce-"));
+    assert.ok(p.webview.html.includes("src/auth/login.ts"));
+    assert.ok(p.webview.handler, "message handler wired");
+  });
+
+  it("decision + note round-trip patches the diff", async () => {
+    const { vscode, panels, commands } = stubVscode();
+    activate(vscode);
+    await commands.get("deci.openDiffReview")?.(DIFF);
+    const p = panels.find((x) => x.viewType === "deci.diffReview");
+    assert.ok(p?.webview.handler);
+    const send = p.webview.handler as (m: Record<string, unknown>) => Promise<void>;
+    const idMatch = /data-finding="([^"]+)"/.exec(p.webview.html);
+    assert.ok(idMatch, "finding id rendered");
+    const fid = idMatch[1] as string;
+    await send({ type: "decision", id: fid, action: "accept" });
+    const patches = p.webview.messages.filter((m) => (m as { type?: string }).type === "patch");
+    assert.ok(patches.length > 0, "decision pushes a patch");
+    assert.ok(JSON.stringify(patches).includes("accepted"));
+    await send({ type: "note", op: "add", file: "src/auth/login.ts", line: 20, text: "check <this>", findingId: fid });
+    const patches2 = p.webview.messages.filter((m) => (m as { type?: string }).type === "patch");
+    const last = JSON.stringify(patches2[patches2.length - 1]);
+    assert.ok(last.includes("check &lt;this&gt;"), "note text escaped in patch");
+    await send({ type: "view", view: "split" });
+    assert.ok(JSON.stringify(p.webview.messages).includes("diff-grid"), "split view renders");
+  });
+
+  it("settings, new-review, tests and history panels render", async () => {
+    const { vscode, panels, commands } = stubVscode();
+    activate(vscode);
+    await commands.get("deci.openSettings")?.();
+    const s = panels.find((x) => x.viewType === "deci.settings");
+    assert.ok(s && s.webview.html.includes("OpenAI") && s.webview.html.includes("Anthropic") && s.webview.html.includes("Allow cloud AI"));
+    assert.ok(s.webview.html.includes("key: none needed"), "vscode-lm needs no key");
+    await commands.get("deci.newReview")?.();
+    assert.ok(panels.find((x) => x.viewType === "deci.newReview")?.webview.html.includes("Branch range"));
+    await commands.get("deci.openTests")?.();
+    assert.ok(panels.find((x) => x.viewType === "deci.tests")?.webview.html.includes("Verification"));
+    await commands.get("deci.openHistory")?.();
+    const h = panels.find((x) => x.viewType === "deci.historyView");
+    assert.ok(h?.webview.handler, "history handler wired");
+    await (h.webview.handler as (m: Record<string, unknown>) => Promise<void>)({ type: "compareSelect", id: "x" });
+    assert.ok(h.webview.messages.some((m) => (m as { type?: string }).type === "patch"));
+  });
+
+  it("malformed UI messages never throw", async () => {
+    const { vscode, panels, commands } = stubVscode();
+    activate(vscode);
+    await commands.get("deci.openDiffReview")?.(DIFF);
+    const p = panels.find((x) => x.viewType === "deci.diffReview");
+    const send = p?.webview.handler as (m: Record<string, unknown>) => Promise<void>;
+    await send({});
+    await send({ type: "decision" });
+    await send({ type: "note", op: "add" });
+    await send({ type: "nope" });
+  });
+
+  it("notes and decisions persist under .deci/", async () => {
+    const { vscode, panels, commands } = stubVscode();
+    activate(vscode);
+    await commands.get("deci.openDiffReview")?.(DIFF);
+    const p = panels.find((x) => x.viewType === "deci.diffReview");
+    const send = p?.webview.handler as (m: Record<string, unknown>) => Promise<void>;
+    const idMatch = /data-finding="([^"]+)"/.exec(p?.webview.html ?? "");
+    const fid = (idMatch?.[1] ?? "") as string;
+    await send({ type: "note", op: "add", file: "src/auth/login.ts", line: 20, text: "persist me", findingId: fid });
+    await send({ type: "decision", id: fid, action: "accept" });
+    const fs = vscode.workspace.fs as unknown as { read(p: string): string; exists(p: string): boolean };
+    let rev = "worktree";
+    try {
+      rev = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim() || rev;
+    } catch {
+      /* outside a repo */
+    }
+    assert.ok(fs.exists(join(process.cwd(), `.deci/notes/${rev}.json`)), "note file written");
+    assert.ok(fs.read(join(process.cwd(), `.deci/notes/${rev}.json`)).includes("persist me"), "note content persisted");
+    assert.ok(fs.exists(join(process.cwd(), `.deci/decisions/${rev}.json`)), "decision file written");
+    assert.ok(fs.read(join(process.cwd(), `.deci/decisions/${rev}.json`)).includes("accepted"), "decision choice persisted");
   });
 });

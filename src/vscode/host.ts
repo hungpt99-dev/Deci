@@ -5,7 +5,8 @@
 // (git diff → core panels) that make the extension usable standalone.
 // Built to dist/vscode/host.js (package.json main).
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as vscode from "vscode";
 import { activate as activateCore } from "./extension.js";
 import type { PanelNode } from "../panels.js";
@@ -101,13 +102,25 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       createTextEditorDecorationType: (options: unknown) =>
         vscode.window.createTextEditorDecorationType(options as vscode.DecorationRenderOptions),
+      showInformationMessage: vscode.window.showInformationMessage.bind(vscode.window),
+      showErrorMessage: vscode.window.showErrorMessage.bind(vscode.window),
+      registerWebviewViewProvider: vscode.window.registerWebviewViewProvider.bind(vscode.window),
     },
     workspace: {
       getConfiguration: (section: string) => vscode.workspace.getConfiguration(section),
       fs: {
         exists: (p: string) => existsSync(p),
         read: (p: string) => readFileSync(p, "utf8"),
+        write: (p: string, content: string) => {
+          mkdirSync(dirname(p), { recursive: true });
+          writeFileSync(p, content, "utf8");
+        },
       },
+    },
+    secrets: {
+      get: (key: string) => context.secrets.get(key),
+      store: (key: string, value: string) => context.secrets.store(key, value),
+      delete: (key: string) => context.secrets.delete(key),
     },
     languages: {
       registerHoverProvider: vscode.languages.registerHoverProvider?.bind(vscode.languages),
@@ -158,10 +171,8 @@ export function activate(context: vscode.ExtensionContext): void {
       undefined,
       (err) => vscode.window.showErrorMessage(`Deci: review failed — ${(err as Error)?.message ?? err}`),
     );
-    void vscode.commands.executeCommand("deci.showDecisions", diff).then(
-      undefined,
-      (err) => vscode.window.showErrorMessage(`Deci: decisions failed — ${(err as Error)?.message ?? err}`),
-    );
+    // deci.showReviewMap now opens the interactive Diff Review itself; the
+    // legacy Decisions <pre> panel stays available via its own command.
   };
   context.subscriptions.push(
     vscode.commands.registerCommand("deci.analyzeWorkspace", () => analyze(false)),

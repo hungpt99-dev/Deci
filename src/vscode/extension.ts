@@ -2,7 +2,7 @@
 // gutter icons + hover cards + Accept/Reject/Investigate commands (US-004).
 // Core stays pure in decisions.ts; this file is the thin editor adapter.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildManualDiff,
@@ -54,6 +54,7 @@ import {
   emptyContext,
   renderQueueEvidenceMarkdown,
   type EvidenceBundle,
+  type TicketInput,
 } from "../evidence.js";
 import {
   describeConfig,
@@ -91,6 +92,47 @@ import { ACTION_REGISTRY, type ActionName } from "../blocks.js";
 import { applyFixAfterApproval, executeTool, proposeFixStructured } from "../chatTools.js";
 import { FileConversationStore } from "../chatStore.js";
 import { ChatEngine } from "../chatEngine.js";
+import { parseFileHunks } from "../semantic.js";
+import { symbolsForHunks } from "../symbols.js";
+import { buildImpactMap, type ImpactMap } from "../impact.js";
+import { discoverTests, type TestDiscovery } from "../discover.js";
+import { selectTests, type TestSelection } from "../select.js";
+import { runTests as runSelectedTests } from "../run.js";
+import { diagnoseFailure } from "../diagnose.js";
+import { generateTests, writeGeneratedTests, type GeneratedTest } from "../generate.js";
+import { buildRollbackPlan, buildTestPlan, type RollbackPlan, type TestPlan } from "../bundle.js";
+import { explainChange } from "../operations.js";
+import { checkProvider, PROVIDER_SPECS, resolveProvider, type DeciOperation } from "../providers.js";
+import { parseDiffHunks } from "./ui/diffModel.js";
+import type { ReviewMap } from "../reviewMap.js";
+import { DECI_CSS } from "./ui/css.js";
+import { BASE_CLIENT_JS, doc, makeNonce } from "./ui/html.js";
+import {
+  DIFF_REVIEW_CLIENT_JS,
+  buildDiffReviewHtml,
+  diffFileHtml,
+  type DiffReviewVM,
+  type FindingVM,
+} from "./ui/diffReview.js";
+import { SIDEBAR_CLIENT_JS, buildSidebarHtml } from "./ui/sidebar.js";
+import { SETTINGS_CLIENT_JS, buildSettingsHtml, type SettingsVM } from "./ui/settings.js";
+import { NEW_REVIEW_CLIENT_JS, buildNewReviewHtml } from "./ui/newReview.js";
+import { HISTORY_CLIENT_JS, historyPanelHtml } from "./ui/historyCompare.js";
+import { TESTS_CLIENT_JS, testsPanelHtml, type TestRow } from "./ui/testsPanel.js";
+import {
+  addNote,
+  deleteNote,
+  decisionsPath,
+  notesFor,
+  notesPath,
+  parseDecided,
+  parseNotes,
+  serializeDecided,
+  serializeNotes,
+  toggleNoteResolved,
+  type DecidedState,
+  type NoteMap,
+} from "./ui/notes.js";
 
 type Vscode = {
   window: {
@@ -103,6 +145,9 @@ type Vscode = {
     };
     showQuickPick?(items: string[], options?: unknown): Thenable<string | undefined>;
     showInputBox?(options?: unknown): Thenable<string | undefined>;
+    showInformationMessage?(message: string): void;
+    showErrorMessage?(message: string): void;
+    registerWebviewViewProvider?(viewId: string, provider: unknown): unknown;
     activeTextEditor?: {
       document: { uri: { fsPath: string }; lineCount: number };
       setDecorations?(kind: unknown, ranges: unknown[]): void;
@@ -111,9 +156,22 @@ type Vscode = {
     registerTreeDataProvider?(viewId: string, provider: unknown): unknown;
   };
   workspace: {
-    getConfiguration(section: string): { get<T>(key: string): T | undefined };
+    getConfiguration(section: string): {
+      get<T>(key: string): T | undefined;
+      update?(key: string, value: unknown): unknown;
+    };
     /** Real-fs adapter for ref reads (host injects; tests omit). */
-    fs?: { exists: (path: string) => boolean; read: (path: string) => string };
+    fs?: {
+      exists: (path: string) => boolean;
+      read: (path: string) => string;
+      write?: (path: string, content: string) => void;
+    };
+  };
+  /** SecretStorage passthrough (host injects; tests omit → key UI degrades). */
+  secrets?: {
+    get(key: string): Promise<string | undefined>;
+    store(key: string, value: string): Promise<void>;
+    delete(key: string): Promise<void>;
   };
   languages?: {
     registerHoverProvider?(selector: unknown, provider: unknown): unknown;
@@ -889,7 +947,7 @@ export function activate(
     return { ok: true, detail: `Opened ${clean}${line ? `:${line}` : ""}.` };
   };
 
-  vscode.commands.registerCommand("deci.openChat", async (convId: unknown) => {
+  const openChatPanel = async (convId: unknown): Promise<void> => {
     const conversations = await chatStore.list();
     const providerConfig = resolveProviderConfig({}, process.env);
     const target = typeof convId === "string" ? await chatStore.get(convId) : null;
@@ -997,7 +1055,8 @@ export function activate(
       }
     });
     await pushChat();
-  });
+  };
+  vscode.commands.registerCommand("deci.openChat", openChatPanel);
   vscode.commands.registerCommand("deci.chat.new", async (title: unknown) => {
     const name = typeof title === "string" && title.trim()
       ? title.trim()
@@ -1066,7 +1125,13 @@ export function activate(
     );
     entries = noteReview(entries, `review ${entries.length + 1}`, diff, q);
     syncHistory();
-    return showReviewMap(vscode, diff);
+    showReviewMap(vscode, diff);
+    // Feed the new interactive UI from the same diff (history already noted above).
+    void (async () => {
+      await runUiAnalysis(diff, await headRev(), { skipNote: true });
+      await openDiffReview();
+    })();
+    return undefined;
   });
   vscode.commands.registerCommand("deci.showDecisions", (diffText: unknown) =>
     showDecisions(vscode, typeof diffText === "string" ? diffText : ""),
@@ -1087,6 +1152,1025 @@ export function activate(
   vscode.commands.registerCommand("deci.showImpactReport", (html: unknown) => {
     if (typeof html === "string" && html) showImpactReport(vscode, html);
   });
+
+  // ---------- Interactive review UI (webviews; core untouched) ----------
+  interface UiSession {
+    rev: string;
+    diff: string;
+    map: ReviewMap;
+    queue: DecisionPoint[];
+    evidence: EvidenceBundle[];
+    impact: ImpactMap | null;
+    discovery: TestDiscovery | null;
+    selection: TestSelection | null;
+    verify: VerifyReport | null;
+    generated: GeneratedTest[];
+    results: TestRow[];
+    diagnosis: string | null;
+    fixDiff: string | null;
+    fixPatch: { path: string; diff: string; description: string } | null;
+    fixGuards: string[];
+    testPlan: TestPlan | null;
+    rollbackPlan: RollbackPlan | null;
+    aiCard: string | null;
+    alternatives: AlternativeSet | null;
+    notes: NoteMap;
+    decided: Record<string, DecidedState>;
+    expandedFile: string | null;
+    view: "unified" | "split";
+    compareSel: string[];
+    error: string | null;
+  }
+  let ui: UiSession | null = null;
+  let branchLabel = "";
+  const reviewDiffs = new Map<string, string>();
+  type UiWebview = {
+    html: string;
+    postMessage?(msg: unknown): void;
+    onDidReceiveMessage?(cb: (msg: Record<string, unknown>) => void): unknown;
+  };
+  let diffView: UiWebview | null = null;
+  let sideView: UiWebview | null = null;
+
+  const readRepoSync = (rel: string): string | null => {
+    try {
+      return readFileSync(join(workspaceRoot, rel), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const listRepoSync = (root: string): string[] | null => {
+    try {
+      const out: string[] = [];
+      const walk = (dir: string, rel: string, depth: number): void => {
+        if (depth > 6 || out.length >= 400) return;
+        let ents: string[];
+        try {
+          ents = readdirSync(dir);
+        } catch {
+          return;
+        }
+        for (const e of ents) {
+          if (e === "node_modules" || e === ".git" || e === "dist" || e === ".deci") continue;
+          const abs = join(dir, e);
+          const rp = rel ? `${rel}/${e}` : e;
+          try {
+            const st = statSync(abs);
+            if (st.isDirectory()) walk(abs, rp, depth + 1);
+            else out.push(rp);
+          } catch {
+            /* skip */
+          }
+        }
+      };
+      walk(root, "", 0);
+      return out;
+    } catch {
+      return null;
+    }
+  };
+  const repoIoSync = {
+    listFiles: (r: string): string[] | null => listRepoSync(r),
+    read: (p: string): string => {
+      const c = readRepoSync(p);
+      if (c === null) throw new Error(`unreadable ${p}`);
+      return c;
+    },
+  };
+  const syncExec = (cmd: string): { exitCode: number; output: string } => {
+    try {
+      const out = execFileSync(cmd, {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        timeout: 180000,
+        maxBuffer: 10 * 1024 * 1024,
+        shell: true,
+      }) as string;
+      return { exitCode: 0, output: out };
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string; status?: number };
+      return { exitCode: err.status ?? 1, output: `${err.stdout ?? ""}\n${err.stderr ?? ""}` };
+    }
+  };
+  const loadNotes = (rev: string): NoteMap => {
+    try {
+      const p = join(workspaceRoot, notesPath(rev));
+      if (vscode.workspace.fs?.exists(p)) return parseNotes(vscode.workspace.fs.read(p));
+    } catch {
+      /* fall through */
+    }
+    return {};
+  };
+  const saveNotes = (rev: string, map: NoteMap): void => {
+    try {
+      vscode.workspace.fs?.write?.(join(workspaceRoot, notesPath(rev)), serializeNotes(map));
+    } catch {
+      /* degraded host without write */
+    }
+  };
+  const loadDecided = (rev: string): Record<string, DecidedState> => {
+    try {
+      const p = join(workspaceRoot, decisionsPath(rev));
+      if (vscode.workspace.fs?.exists(p)) return parseDecided(vscode.workspace.fs.read(p));
+    } catch {
+      /* fall through */
+    }
+    return {};
+  };
+  const saveDecided = (rev: string, saved: Record<string, DecidedState>): void => {
+    try {
+      vscode.workspace.fs?.write?.(join(workspaceRoot, decisionsPath(rev)), serializeDecided(saved));
+    } catch {
+      /* degraded host without write */
+    }
+  };
+  const applyDecided = (queue: DecisionPoint[], saved: Record<string, DecidedState>): DecisionPoint[] =>
+    queue.map((d) => {
+      const s = saved[d.id];
+      return s ? { ...d, status: s.status, rejectReason: (s.reason ?? d.rejectReason) as DecisionPoint["rejectReason"], constraint: s.constraint ?? d.constraint, decidedAt: s.decidedAt } : d;
+    });
+  const headRev = async (): Promise<string> => {
+    try {
+      const r = await gitRun(["rev-parse", "HEAD"]);
+      return r.stdout.trim() || "worktree";
+    } catch {
+      return "worktree";
+    }
+  };
+
+  const findingsVm = (): FindingVM[] => {
+    if (!ui) return [];
+    return ui.queue.map((d) => {
+      const b = ui?.evidence.find((x) => x.decisionId === d.id);
+      return {
+        decision: d,
+        evidencePresent: b ? `${b.present}/${b.items.length} present` : "—",
+        notes: notesFor(ui?.notes ?? {}, d.id, d.file, d.line),
+      };
+    });
+  };
+  const diffVm = (): DiffReviewVM | null => {
+    if (!ui) return null;
+    const files = parseDiffHunks(ui.diff);
+    return {
+      rev: ui.rev,
+      files,
+      fileMeta: new Map(ui.map.files.map((f) => [f.path, f])),
+      findings: findingsVm(),
+      evidence: ui.evidence,
+      impact: ui.impact,
+      discovery: ui.discovery,
+      selection: ui.selection,
+      testPlan: ui.testPlan,
+      rollbackPlan: ui.rollbackPlan,
+      expandedFile: ui.expandedFile,
+      view: ui.view,
+      stale: false,
+      aiCard: ui.aiCard,
+    };
+  };
+  const pushDiffFile = (): void => {
+    const vm = diffVm();
+    if (!vm || !diffView?.postMessage) return;
+    const file = vm.files.find((f) => f.path === vm.expandedFile) ?? vm.files[0];
+    if (!file) return;
+    diffView.postMessage({ type: "patch", target: "drFile", html: diffFileHtml(vm, file, false) });
+  };
+  const sidebarVm = async (): Promise<Parameters<typeof buildSidebarHtml>[0]> => ({
+    branch: branchLabel,
+    map: ui?.map ?? null,
+    queue: ui?.queue ?? [],
+    evidence: ui?.evidence ?? [],
+    alternatives: ui?.alternatives ?? null,
+    history: entries,
+    conversations: await chatStore.list().catch(() => []),
+    activeConvId: activeConv?.id ?? null,
+  });
+  const pushSidebar = async (): Promise<void> => {
+    if (!sideView?.postMessage) return;
+    sideView.postMessage({ type: "patch", target: "sidebar", html: buildSidebarHtml(await sidebarVm()) });
+  };
+  const refreshTrees = (): void => {
+    if (!ui) return;
+    providers["deci.review"].set(buildReviewNodes(ui.map));
+    providers["deci.decisions"].set(buildDecisionNodes(ui.queue));
+    providers["deci.evidence"].set(buildEvidenceNodes(ui.evidence));
+  };
+
+  /** Full local pipeline for one diff. Async bits (test runs, AI) stream in via patches. */
+  const runUiAnalysis = async (
+    diff: string,
+    rev: string,
+    opts: { verify?: boolean; staticOnly?: boolean; genTests?: boolean; runTests?: boolean; aiExplain?: boolean; skipNote?: boolean; ticket?: TicketInput | null; designDoc?: TicketInput | null } = {},
+  ): Promise<void> => {
+    const map = buildReviewMap(diff);
+    const decided = loadDecided(rev);
+    const queue = applyDecided(decisionsForDiff(diff), decided);
+    const changedFiles = [...new Set(queue.map((d) => d.file))];
+    const evidence = collectQueueEvidence(queue, emptyContext({
+      changedFiles,
+      ...(opts.ticket ? { ticket: opts.ticket } : {}),
+      ...(opts.designDoc ? { designDoc: opts.designDoc } : {}),
+    }));
+    let impact: ImpactMap | null = null;
+    try {
+      impact = buildImpactMap(symbolsForHunks(parseFileHunks(diff)), changedFiles, repoIoSync, workspaceRoot);
+    } catch {
+      impact = null;
+    }
+    let discovery: TestDiscovery | null = null;
+    let selection: TestSelection | null = null;
+    try {
+      discovery = discoverTests(repoIoSync, workspaceRoot);
+      selection = selectTests(changedFiles, impact ?? { edges: [], directFiles: [], indirectFiles: [], testFiles: [], scannedFiles: 0, truncated: false, unresolved: [] }, discovery.tests);
+    } catch {
+      /* discovery is best-effort */
+    }
+    const report = runFullVerify(diff, { runCommands: false });
+    const verifiedMap = applyVerification(map, report.verifiedPaths);
+    ui = {
+      rev, diff, map: verifiedMap, queue, evidence, impact, discovery, selection,
+      verify: report, generated: [], results: [], diagnosis: null, fixDiff: null,
+      fixPatch: null, fixGuards: [], testPlan: buildTestPlan(queue, report, evidence),
+      rollbackPlan: buildRollbackPlan(changedFiles), aiCard: null, alternatives: null,
+      notes: loadNotes(rev), decided, expandedFile: null, view: "unified", compareSel: [], error: null,
+    };
+    if (!opts.skipNote) {
+      entries = noteReview(entries, `review ${entries.length + 1}`, diff, queue);
+      const last = entries[entries.length - 1];
+      if (last) reviewDiffs.set(last.id, diff);
+      syncHistory();
+    }
+    refreshTrees();
+    applyDecisionDecorations(vscode, queue);
+    void pushSidebar();
+    if (opts.verify) {
+      try {
+        const full = opts.staticOnly
+          ? runFullVerify(diff, { runCommands: false })
+          : runFullVerify(diff, { runCommands: true }, syncExec);
+        if (ui && ui.diff === diff) {
+          ui.verify = full;
+          ui.map = applyVerification(ui.map, full.verifiedPaths);
+          refreshTrees();
+          void pushSidebar();
+        }
+      } catch (err) {
+        if (ui && ui.diff === diff) ui.error = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (opts.genTests && ui && ui.diff === diff) {
+      try {
+        const symbols = symbolsForHunks(parseFileHunks(diff));
+        const fw = (discovery?.frameworks.find((f) => f === "node:test" || f === "jest" || f === "vitest") ?? "node:test") as "node:test" | "jest" | "vitest";
+        ui.generated = generateTests(symbols, { readFile: (p) => readRepoSync(p) }, fw);
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (opts.runTests && ui && ui.diff === diff) {
+      try {
+        const runnable = (ui.selection?.selected ?? []).filter((t) => t.command.length > 0);
+        const out = await runSelectedTests(runnable, { cwd: workspaceRoot, timeoutMs: 120000, revision: rev });
+        if (ui && ui.diff === diff) {
+          ui.results = out.map((r) => ({ path: r.path, status: r.status, detail: r.detail, output: r.output }));
+          void pushSidebar();
+        }
+      } catch (err) {
+        if (ui && ui.diff === diff) ui.error = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (opts.aiExplain && ui && ui.diff === diff) {
+      try {
+        const cfg = vscode.workspace.getConfiguration("deci");
+        const allowCloud = cfg.get<boolean>("allowCloudAi") === true || process.env.DECI_ALLOW_CLOUD_AI === "1";
+        const routes = (cfg.get<Record<string, string>>("routing") ?? {}) as Partial<Record<DeciOperation, string>>;
+        const defaultProvider = resolveProvider({ provider: cfg.get<string>("provider") ?? "ollama" }, process.env);
+        if (defaultProvider.dataClass !== "local" && !allowCloud) {
+          ui.aiCard = "AI explanation refused: cloud provider needs explicit opt-in — enable “Allow cloud AI” in Settings.";
+        } else {
+          const res = await explainChange(
+            { defaultProvider, routes, env: process.env as Record<string, string | undefined> },
+            { summary: `${ui.map.totalLoc} LOC across ${ui.map.files.length} files`, files: changedFiles, diffExcerpt: diff.slice(0, 8000) },
+          );
+          if (ui && ui.diff === diff) ui.aiCard = `AI explanation (${res.handledBy.provider}:${res.handledBy.model}):\n${res.text}`;
+        }
+      } catch (err) {
+        if (ui && ui.diff === diff) ui.aiCard = `AI explanation unavailable: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+  };
+
+  const openDiffReview = async (diffText?: string): Promise<void> => {
+    if (typeof diffText === "string") {
+      await runUiAnalysis(diffText, await headRev());
+    } else if (!ui) {
+      const d = await gitRun(["diff", "HEAD", "--"]);
+      await runUiAnalysis(d.stdout, await headRev());
+    }
+    const vm = diffVm();
+    const panel = vscode.window.createWebviewPanel("deci.diffReview", "Diff Review", 1, { enableScripts: true });
+    diffView = panel.webview as unknown as UiWebview;
+    const nonce = makeNonce();
+    panel.webview.html = vm
+      ? doc({ title: "Diff Review", css: DECI_CSS, body: buildDiffReviewHtml(vm), state: { view: vm.view, expandedFile: vm.expandedFile }, nonce, clientJs: `${BASE_CLIENT_JS}\n${DIFF_REVIEW_CLIENT_JS}` })
+      : doc({ title: "Diff Review", css: DECI_CSS, body: "<div class=\"deci-wrap\"><p class=\"muted\">No review yet — run an analysis first.</p></div>", nonce, clientJs: `${BASE_CLIENT_JS}\n${DIFF_REVIEW_CLIENT_JS}` });
+    panel.webview.onDidReceiveMessage?.((raw) => {
+      void onUiMessage((raw ?? {}) as Record<string, unknown>);
+    });
+  };
+
+  const openSettingsPanel = async (): Promise<void> => {
+    const cfg = vscode.workspace.getConfiguration("deci");
+    const get = <T,>(key: string): T | undefined => {
+      try {
+        return cfg.get<T>(key);
+      } catch {
+        return undefined;
+      }
+    };
+    const env = process.env;
+    const activeProvider = get<string>("provider") ?? env.DECI_PROVIDER ?? "ollama";
+    const savedProviders = get<Record<string, { baseURL?: string; model?: string }>>("providers") ?? {};
+    const providers: SettingsVM["providers"] = await Promise.all(
+      PROVIDER_SPECS.map(async (spec) => {
+        const upper = spec.id.toUpperCase().replace(/-/g, "_");
+        const saved = savedProviders[spec.id] ?? {};
+        let keySet = false;
+        try {
+          keySet = (await vscode.secrets?.get(`deci.key.${spec.id}`)) ? true : false;
+        } catch {
+          keySet = false;
+        }
+        if (!keySet && spec.needsKey) {
+          keySet = Boolean(env[`DECI_${upper}_API_KEY`] ?? env.DECI_API_KEY);
+        }
+        const envOverridden: string[] = [];
+        if (env.DECI_PROVIDER === spec.id) envOverridden.push("DECI_PROVIDER");
+        if (env[`DECI_${upper}_BASE_URL`]) envOverridden.push(`DECI_${upper}_BASE_URL`);
+        if (env[`DECI_${upper}_MODEL`]) envOverridden.push(`DECI_${upper}_MODEL`);
+        if (env[`DECI_${upper}_API_KEY`]) envOverridden.push(`DECI_${upper}_API_KEY`);
+        return {
+          spec,
+          baseURL: saved.baseURL ?? spec.defaultBaseURL ?? "",
+          model: saved.model ?? "",
+          keySet,
+          envOverridden,
+        };
+      }),
+    );
+    const vm: SettingsVM = {
+      providers,
+      activeProvider,
+      routing: get<Record<string, string>>("routing") ?? {},
+      fallback: get<string[]>("fallback") ?? [],
+      allowCloudAi: get<boolean>("allowCloudAi") ?? env.DECI_ALLOW_CLOUD_AI === "1",
+      allowCloudFallback: get<boolean>("allowCloudFallback") ?? env.DECI_ALLOW_CLOUD_FALLBACK === "1",
+      verify: get<boolean>("verify") ?? true,
+      staticOnly: get<boolean>("staticOnly") ?? false,
+      testTimeoutMs: get<number>("testTimeoutMs") ?? 120000,
+      dirty: false,
+    };
+    const panel = vscode.window.createWebviewPanel("deci.settings", "Deci Settings", 1, { enableScripts: true });
+    const nonce = makeNonce();
+    settingsView = panel.webview as unknown as UiWebview;
+    settingsView.html = doc({
+      title: "Deci Settings", css: DECI_CSS, body: buildSettingsHtml(vm), nonce,
+      clientJs: `${BASE_CLIENT_JS}\n${SETTINGS_CLIENT_JS}`,
+    });
+    panel.webview.onDidReceiveMessage?.((raw) => {
+      void onUiMessage((raw ?? {}) as Record<string, unknown>, panel.webview as unknown as UiWebview);
+    });
+  };
+
+  const openNewReviewPanel = async (): Promise<void> => {
+    const branches = await gitRun(["branch", "--format=%(refname:short)"]);
+    const list = branches.exitCode === 0 ? branches.stdout.split("\n").map((b) => b.trim()).filter(Boolean) : [];
+    const vm = {
+      hasGit: branches.exitCode === 0,
+      branches: list.length ? list : ["main"],
+      defaultBranch: list.includes("main") ? "main" : (list[0] ?? "main"),
+      verify: true, staticOnly: false, genTests: false, runTests: false, diagnose: false, aiExplain: false,
+      busy: false, error: null as string | null,
+    };
+    const panel = vscode.window.createWebviewPanel("deci.newReview", "Deci: New Review", 1, { enableScripts: true });
+    const nonce = makeNonce();
+    (panel.webview as unknown as UiWebview).html = doc({
+      title: "Deci: New Review", css: DECI_CSS, body: buildNewReviewHtml(vm), nonce,
+      clientJs: `${BASE_CLIENT_JS}\n${NEW_REVIEW_CLIENT_JS}`,
+    });
+    panel.webview.onDidReceiveMessage?.((raw) => {
+      void onUiMessage((raw ?? {}) as Record<string, unknown>, panel.webview as unknown as UiWebview);
+    });
+  };
+
+  const openTestsPanel = async (): Promise<void> => {
+    const panel = vscode.window.createWebviewPanel("deci.tests", "Deci Tests", 1, { enableScripts: true });
+    const nonce = makeNonce();
+    const render = (): string => testsPanelHtml({
+      verify: ui?.verify ?? null, verifying: false,
+      discovery: ui?.discovery ?? null, selection: ui?.selection ?? null,
+      results: ui?.results ?? [], generated: (ui?.generated ?? []).map((g) => ({ path: g.path, added: false })),
+      diagnosis: ui?.diagnosis ?? null, fixDiff: ui?.fixDiff ?? null, error: ui?.error ?? null,
+    });
+    (panel.webview as unknown as UiWebview).html = doc({
+      title: "Deci Tests", css: DECI_CSS, body: render(), nonce,
+      clientJs: `${BASE_CLIENT_JS}\n${TESTS_CLIENT_JS}`,
+    });
+    testsView = panel.webview as unknown as UiWebview;
+    panel.webview.onDidReceiveMessage?.((raw) => {
+      void onUiMessage((raw ?? {}) as Record<string, unknown>, panel.webview as unknown as UiWebview);
+    });
+  };
+  let testsView: UiWebview | null = null;
+  const pushTests = (): void => {
+    if (!testsView?.postMessage || !ui) return;
+    testsView.postMessage({
+      type: "patch", target: "tests",
+      html: testsPanelHtml({
+        verify: ui.verify, verifying: false, discovery: ui.discovery, selection: ui.selection,
+        results: ui.results, generated: ui.generated.map((g) => ({ path: g.path, added: false })),
+        diagnosis: ui.diagnosis, fixDiff: ui.fixDiff, error: ui.error,
+      }),
+    });
+  };
+
+  const openHistoryPanel = async (): Promise<void> => {
+    const panel = vscode.window.createWebviewPanel("deci.historyView", "Deci History", 1, { enableScripts: true });
+    const nonce = makeNonce();
+    const render = (): string => {
+      const sel = ui?.compareSel ?? [];
+      const [a, b] = sel.map((id) => entries.find((e) => e.id === id)).filter((e) => e !== undefined);
+      return historyPanelHtml({ entries, selected: sel, compare: a && b ? { a, b } : null });
+    };
+    (panel.webview as unknown as UiWebview).html = doc({
+      title: "Deci History", css: DECI_CSS, body: render(), nonce,
+      clientJs: `${BASE_CLIENT_JS}\n${HISTORY_CLIENT_JS}`,
+    });
+    historyView = panel.webview as unknown as UiWebview;
+    panel.webview.onDidReceiveMessage?.((raw) => {
+      void onUiMessage((raw ?? {}) as Record<string, unknown>, panel.webview as unknown as UiWebview);
+    });
+  };
+  let historyView: UiWebview | null = null;
+  const pushHistory = (): void => {
+    if (!historyView?.postMessage) return;
+    const sel = ui?.compareSel ?? [];
+    const [a, b] = sel.map((id) => entries.find((e) => e.id === id)).filter((e) => e !== undefined);
+    historyView.postMessage({
+      type: "patch", target: "history",
+      html: historyPanelHtml({ entries, selected: sel, compare: a && b ? { a, b } : null }),
+    });
+  };
+
+  const decide = async (id: string, action: string, reason?: string, constraint?: string): Promise<void> => {
+    if (!ui) return;
+    if (action === "accept") {
+      ui.queue = acceptDecision(ui.queue, id);
+      ui.decided[id] = { status: "accepted", decidedAt: new Date().toISOString() };
+    } else if (action === "investigate") {
+      ui.queue = investigateDecision(ui.queue, id);
+      ui.decided[id] = { status: "investigating", decidedAt: new Date().toISOString() };
+    } else if (action === "reject") {
+      let r = reason;
+      let c = constraint;
+      if (!r) {
+        r = await vscode.window.showQuickPick?.(REJECT_REASONS, { placeHolder: "Reject reason" });
+        if (!r) return;
+      }
+      if (!c) {
+        c = await vscode.window.showInputBox?.({ prompt: "Constraint (required — what must hold instead?)" });
+        if (!c?.trim()) return;
+      }
+      try {
+        ui.queue = rejectDecision(ui.queue, id, r as RejectReason, c);
+      } catch {
+        return;
+      }
+      ui.decided[id] = { status: "rejected", reason: r, constraint: c.trim(), decidedAt: new Date().toISOString() };
+      const d = ui.queue.find((x) => x.id === id);
+      if (d) {
+        try {
+          ui.alternatives = generateAlternatives(d);
+        } catch {
+          ui.alternatives = null;
+        }
+      }
+    } else {
+      return;
+    }
+    saveDecided(ui.rev, ui.decided);
+    applyDecisionDecorations(vscode, ui.queue);
+    refreshTrees();
+    await pushSidebar();
+    pushDiffFile();
+  };
+
+  const onUiMessage = async (msg: Record<string, unknown>, view?: UiWebview): Promise<void> => {
+    try {
+      switch (msg.type) {
+        case "decision": {
+          if (typeof msg.id === "string" && typeof msg.action === "string") {
+            await decide(msg.id, msg.action, typeof msg.reason === "string" ? msg.reason : undefined, typeof msg.constraint === "string" ? msg.constraint : undefined);
+          }
+          break;
+        }
+        case "note": {
+          if (!ui) break;
+          const op = msg.op;
+          if (op === "add" && typeof msg.file === "string" && typeof msg.text === "string") {
+            const line = typeof msg.line === "number" ? msg.line : null;
+            const r = addNote(ui.notes, msg.file, line, "You", msg.text, typeof msg.findingId === "string" ? msg.findingId : undefined);
+            if (r) {
+              ui.notes = r.map;
+              saveNotes(ui.rev, ui.notes);
+              await pushSidebar();
+              pushDiffFile();
+            }
+          } else if (op === "resolve" && typeof msg.id === "string") {
+            ui.notes = toggleNoteResolved(ui.notes, msg.id);
+            saveNotes(ui.rev, ui.notes);
+            pushDiffFile();
+          } else if (op === "delete" && typeof msg.id === "string") {
+            ui.notes = deleteNote(ui.notes, msg.id);
+            saveNotes(ui.rev, ui.notes);
+            pushDiffFile();
+          }
+          break;
+        }
+        case "openFile": {
+          if (typeof msg.path === "string") {
+            const line = typeof msg.line === "number" ? msg.line : (typeof msg.line === "string" && msg.line !== "" ? Number(msg.line) : null);
+            const r = await openFile(msg.path, Number.isFinite(line) ? line : null);
+            if (!r.ok) vscode.window.showErrorMessage?.(r.detail);
+          }
+          break;
+        }
+        case "expandFile": {
+          if (ui && typeof msg.path === "string") {
+            ui.expandedFile = msg.path;
+            pushDiffFile();
+          }
+          break;
+        }
+        case "view": {
+          if (ui && (msg.view === "split" || msg.view === "unified")) {
+            ui.view = msg.view;
+            pushDiffFile();
+          }
+          break;
+        }
+        case "gotoDecision":
+        case "openDecisions":
+        case "openDiff": {
+          await openDiffReview();
+          break;
+        }
+        case "openTests": {
+          await openTestsPanel();
+          break;
+        }
+        case "openEvidence": {
+          if (ui) {
+            const q = typeof msg.id === "string" ? ui.queue.filter((d) => d.id === msg.id) : ui.queue;
+            showEvidence(vscode, q.length ? q : ui.queue);
+          }
+          break;
+        }
+        case "openHistory": {
+          if (typeof msg.id === "string") {
+            const d = reviewDiffs.get(msg.id);
+            if (d !== undefined) await openDiffReview(d);
+            else await openHistoryPanel();
+          } else await openHistoryPanel();
+          break;
+        }
+        case "openChat": {
+          await openChatPanel(typeof msg.id === "string" ? msg.id : undefined);
+          break;
+        }
+        case "newChat": {
+          const conv = createConversation("New conversation");
+          await chatStore.create(conv);
+          await syncChatList();
+          await pushSidebar();
+          break;
+        }
+        case "newReview": {
+          await openNewReviewPanel();
+          break;
+        }
+        case "rerun": {
+          if (ui) await runUiAnalysis(ui.diff, await headRev(), { verify: true, staticOnly: false });
+          await pushSidebar();
+          break;
+        }
+        case "runAnalysis": {
+          const source = typeof msg.source === "string" ? msg.source : "working";
+          const o = (msg.options ?? {}) as Record<string, boolean>;
+          let diff = "";
+          if (source === "staged") diff = (await gitRun(["diff", "--staged", "--"])).stdout;
+          else if (source === "range") {
+            const base = typeof msg.base === "string" && /^[\w./-]+$/.test(msg.base) ? msg.base : "main";
+            const head = typeof msg.head === "string" && /^[\w./-]+$/.test(msg.head) ? msg.head : "HEAD";
+            diff = (await gitRun(["diff", `${base}...${head}`, "--"])).stdout;
+          } else if (source === "file" && typeof msg.file === "string" && msg.file.trim()) {
+            const rel = msg.file.trim().replace(/\\/g, "/");
+            const content = readRepoSync(rel);
+            diff = content === null ? "" : manualDiffForFiles([{ path: rel, content }]);
+          } else diff = (await gitRun(["diff", "HEAD", "--"])).stdout;
+          if (!diff.trim()) {
+            ui = null;
+            vscode.window.showInformationMessage?.("Deci: no changes found for that source.");
+            break;
+          }
+          const refIo = {
+            exists: (p: string) => existsSync(join(workspaceRoot, p)),
+            read: (p: string) => readFileSync(join(workspaceRoot, p), "utf8"),
+          };
+          const ticket = resolveRefInput(typeof msg.ticket === "string" ? msg.ticket : null, refIo);
+          const designDoc = resolveRefInput(typeof msg.doc === "string" ? msg.doc : null, refIo);
+          await runUiAnalysis(diff, await headRev(), {
+            verify: o.verify === true, staticOnly: o.staticOnly === true,
+            genTests: o.genTests === true, runTests: o.runTests === true, aiExplain: o.aiExplain === true,
+            ticket, designDoc,
+          });
+          await openDiffReview();
+          break;
+        }
+        case "selectProvider":
+        case "saveSettings":
+        case "resetSettings":
+        case "fallbackMove":
+        case "fallbackRemove":
+        case "fallbackAdd": {
+          const cfg = vscode.workspace.getConfiguration("deci");
+          if (msg.type === "selectProvider" && typeof msg.provider === "string") {
+            await cfg.update?.("provider", msg.provider);
+          } else if (msg.type === "saveSettings") {
+            const s = (msg.settings ?? {}) as { routes?: Record<string, string>; defs?: Record<string, unknown>; priv?: Record<string, boolean>; providers?: Record<string, { baseURL?: string; model?: string }> };
+            if (s.routes) await cfg.update?.("routing", s.routes);
+            if (s.providers) await cfg.update?.("providers", s.providers);
+            if (typeof s.priv?.allowCloudAi === "boolean") await cfg.update?.("allowCloudAi", s.priv.allowCloudAi);
+            if (typeof s.priv?.allowCloudFallback === "boolean") await cfg.update?.("allowCloudFallback", s.priv.allowCloudFallback);
+            if (typeof s.defs?.verify === "boolean") await cfg.update?.("verify", s.defs.verify);
+            if (typeof s.defs?.staticOnly === "boolean") await cfg.update?.("staticOnly", s.defs.staticOnly);
+            if (typeof s.defs?.testTimeoutMs === "number" && Number.isFinite(s.defs.testTimeoutMs)) {
+              await cfg.update?.("testTimeoutMs", s.defs.testTimeoutMs);
+            }
+          } else if (msg.type === "resetSettings") {
+            for (const k of ["provider", "routing", "fallback", "allowCloudAi", "allowCloudFallback", "verify", "staticOnly", "testTimeoutMs", "providers"]) {
+              await cfg.update?.(k, undefined);
+            }
+          } else {
+            const fb = [...(cfg.get<string[]>("fallback") ?? [])];
+            if (msg.type === "fallbackMove" && typeof msg.from === "number" && typeof msg.to === "number") {
+              const [x] = fb.splice(msg.from, 1);
+              if (x !== undefined) fb.splice(Math.max(0, msg.to), 0, x);
+            } else if (msg.type === "fallbackRemove" && typeof msg.index === "number") {
+              fb.splice(msg.index, 1);
+            } else if (msg.type === "fallbackAdd" && typeof msg.provider === "string" && !fb.includes(msg.provider)) {
+              fb.push(msg.provider);
+            }
+            await cfg.update?.("fallback", fb);
+          }
+          await pushSettings();
+          await pushSidebar();
+          break;
+        }
+        case "testConnection": {
+          if (typeof msg.provider === "string" && view?.postMessage) {
+            const target = view;
+            try {
+              const cfg = vscode.workspace.getConfiguration("deci");
+              const saved = cfg.get<Record<string, { baseURL?: string; model?: string }>>("providers") ?? {};
+              const s = saved[msg.provider] ?? {};
+              let key: string | undefined;
+              try {
+                key = await vscode.secrets?.get(`deci.key.${msg.provider}`);
+              } catch {
+                key = undefined;
+              }
+              const p = resolveProvider(
+                { provider: msg.provider, baseURL: s.baseURL || undefined, model: s.model || undefined, apiKey: key ?? undefined },
+                process.env as Record<string, string | undefined>,
+              );
+              const res = await checkProvider(p, { live: true });
+              target.postMessage?.({ type: "connResult", provider: msg.provider, ok: res.ok, detail: res.detail });
+            } catch (err) {
+              target.postMessage?.({ type: "connResult", provider: msg.provider, ok: false, detail: err instanceof Error ? err.message : String(err) });
+            }
+          }
+          break;
+        }
+        case "keyReplace": {
+          if (typeof msg.provider === "string") {
+            const v = await vscode.window.showInputBox?.({ prompt: `API key for ${msg.provider} (SecretStorage, never displayed)` } as unknown as undefined);
+            if (typeof v === "string" && v.trim() && vscode.secrets) {
+              try {
+                await vscode.secrets.store(`deci.key.${msg.provider}`, v.trim());
+              } catch {
+                /* degraded */
+              }
+              await pushSettings();
+            } else if (!vscode.secrets) {
+              vscode.window.showErrorMessage?.("Deci: SecretStorage unavailable — set DECI_<PROVIDER>_API_KEY instead.");
+            }
+          }
+          break;
+        }
+        case "keyClear": {
+          if (typeof msg.provider === "string" && vscode.secrets) {
+            try {
+              await vscode.secrets.delete(`deci.key.${msg.provider}`);
+            } catch {
+              /* degraded */
+            }
+            await pushSettings();
+          }
+          break;
+        }
+        case "settingsDirty": {
+          break;
+        }
+        case "testsDiscover": {
+          if (!ui) break;
+          try {
+            ui.discovery = discoverTests(repoIoSync, workspaceRoot);
+            const changed = [...new Set(ui.queue.map((d) => d.file))];
+            ui.selection = selectTests(changed, ui.impact ?? { edges: [], directFiles: [], indirectFiles: [], testFiles: [], scannedFiles: 0, truncated: false, unresolved: [] }, ui.discovery.tests);
+          } catch (err) {
+            ui.error = err instanceof Error ? err.message : String(err);
+          }
+          pushTests();
+          await pushSidebar();
+          break;
+        }
+        case "testsGenerate": {
+          if (!ui) break;
+          try {
+            const symbols = symbolsForHunks(parseFileHunks(ui.diff));
+            const fw = (ui.discovery?.frameworks.find((f) => f === "node:test" || f === "jest" || f === "vitest") ?? "node:test") as "node:test" | "jest" | "vitest";
+            ui.generated = generateTests(symbols, { readFile: (p) => readRepoSync(p) }, fw);
+          } catch (err) {
+            ui.error = err instanceof Error ? err.message : String(err);
+          }
+          pushTests();
+          break;
+        }
+        case "testsWrite": {
+          if (!ui) break;
+          try {
+            const res = writeGeneratedTests(ui.generated, {
+              exists: (p) => existsSync(join(workspaceRoot, p)),
+              write: (p, c) => writeFileSync(join(workspaceRoot, p), c, "utf8"),
+            });
+            ui.error = res.skipped.length ? `Skipped existing: ${res.skipped.map((s) => s.path).join(", ")}` : null;
+          } catch (err) {
+            ui.error = err instanceof Error ? err.message : String(err);
+          }
+          pushTests();
+          break;
+        }
+        case "testsRun": {
+          if (!ui) break;
+          try {
+            const paths = Array.isArray(msg.paths) ? msg.paths.filter((p): p is string => typeof p === "string") : null;
+            const pool = ui.selection?.selected ?? [];
+            const runnable = (paths ? pool.filter((t) => paths.includes(t.path)) : pool).filter((t) => t.command.length > 0);
+            const timeout = vscode.workspace.getConfiguration("deci").get<number>("testTimeoutMs") ?? 120000;
+            const out = await runSelectedTests(runnable, { cwd: workspaceRoot, timeoutMs: timeout, revision: ui.rev });
+            ui.results = out.map((r) => ({ path: r.path, status: r.status, detail: r.detail, output: r.output }));
+          } catch (err) {
+            ui.error = err instanceof Error ? err.message : String(err);
+          }
+          pushTests();
+          break;
+        }
+        case "testsDiagnose": {
+          if (!ui) break;
+          try {
+            const failed = ui.results.find((r) => r.status === "failed" || r.status === "error");
+            if (!failed) {
+              ui.diagnosis = "No failed test results to diagnose — run the tests first.";
+            } else {
+              const diag = diagnoseFailure(
+                { path: failed.path, command: [], status: "failed", exitCode: 1, output: failed.output, durationMs: 0, revision: ui.rev, detail: failed.detail },
+                { changedFiles: [...new Set(ui.queue.map((d) => d.file))], readFile: (p) => readRepoSync(p) },
+              );
+              ui.diagnosis = `${diag.summary} ${diag.causes.map((c) => `[${c.standing}] ${c.statement}`).join(" ")}`.slice(0, 2000);
+              try {
+                const proposal = await proposeFixStructured(failed.path, toolContext);
+                ui.fixDiff = proposal.patch ? proposal.patch.diff : null;
+                ui.fixPatch = proposal.patch;
+                ui.fixGuards = proposal.guardLines;
+              } catch {
+                ui.fixDiff = null;
+                ui.fixPatch = null;
+              }
+            }
+          } catch (err) {
+            ui.error = err instanceof Error ? err.message : String(err);
+          }
+          pushTests();
+          break;
+        }
+        case "fixApply": {
+          if (!ui?.fixPatch || msg.confirmed !== true) break;
+          try {
+            const detail = await applyFixAfterApproval(ui.fixPatch, ui.fixGuards, toolContext);
+            ui.diagnosis = `${ui.diagnosis ?? ""}\nApplied: ${detail}`.slice(0, 2000);
+            ui.fixDiff = null;
+            ui.fixPatch = null;
+          } catch (err) {
+            ui.error = err instanceof Error ? err.message : String(err);
+          }
+          pushTests();
+          break;
+        }
+        case "fixDiscard": {
+          if (!ui) break;
+          ui.fixDiff = null;
+          ui.fixPatch = null;
+          ui.diagnosis = null;
+          pushTests();
+          break;
+        }
+        case "chooseAlternative": {
+          if (ui?.alternatives && typeof msg.optionId === "string") {
+            try {
+              const picked = pickAlternative(ui.alternatives, msg.optionId);
+              ui.alternatives = picked;
+              previewImplementation(vscode, picked);
+              await pushSidebar();
+            } catch {
+              /* unknown option */
+            }
+          }
+          break;
+        }
+        case "compareSelect": {
+          ensureCompareSession();
+          if (ui && typeof msg.id === "string") {
+            ui.compareSel = ui.compareSel.includes(msg.id) ? ui.compareSel.filter((x) => x !== msg.id) : [...ui.compareSel.slice(-1), msg.id];
+          }
+          pushHistory();
+          break;
+        }
+        case "exportHistory": {
+          try {
+            const name = `.deci/exports/history-${Date.now()}.json`;
+            writeFileSync(join(workspaceRoot, name), JSON.stringify(entries, null, 2), "utf8");
+            vscode.window.showInformationMessage?.(`Deci: history exported to ${name}`);
+          } catch (err) {
+            vscode.window.showErrorMessage?.(`Deci: export failed — ${err instanceof Error ? err.message : String(err)}`);
+          }
+          break;
+        }
+        case "exportPlan": {
+          try {
+            const body = `# Test plan\n\n${(ui?.testPlan?.toAdd ?? []).map((s) => `- ${s}`).join("\n")}\n\n# Rollback plan\n\n${(ui?.rollbackPlan?.steps ?? []).map((s, i) => `${i + 1}. ${s}`).join("\n")}\n`;
+            const name = `.deci/exports/plan-${Date.now()}.md`;
+            writeFileSync(join(workspaceRoot, name), body, "utf8");
+            vscode.window.showInformationMessage?.(`Deci: plan exported to ${name}`);
+          } catch (err) {
+            vscode.window.showErrorMessage?.(`Deci: export failed — ${err instanceof Error ? err.message : String(err)}`);
+          }
+          break;
+        }
+      }
+    } catch (err) {
+      vscode.window.showErrorMessage?.(`Deci: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const ensureCompareSession = (): void => {
+    if (ui) return;
+    ui = {
+      rev: "", diff: "", map: buildReviewMap(""), queue: [], evidence: [], impact: null,
+      discovery: null, selection: null, verify: null, generated: [], results: [],
+      diagnosis: null, fixDiff: null, fixPatch: null, fixGuards: [], testPlan: null,
+      rollbackPlan: null, aiCard: null, alternatives: null, notes: {}, decided: {},
+      expandedFile: null, view: "unified", compareSel: [], error: null,
+    };
+  };
+
+  let settingsView: UiWebview | null = null;
+  const pushSettings = async (): Promise<void> => {
+    if (!settingsView) return;
+    const cfg = vscode.workspace.getConfiguration("deci");
+    const get = <T,>(key: string): T | undefined => {
+      try {
+        return cfg.get<T>(key);
+      } catch {
+        return undefined;
+      }
+    };
+    const env = process.env;
+    const savedProviders = get<Record<string, { baseURL?: string; model?: string }>>("providers") ?? {};
+    const providers: SettingsVM["providers"] = [];
+    for (const spec of PROVIDER_SPECS) {
+      const upper = spec.id.toUpperCase().replace(/-/g, "_");
+      const saved = savedProviders[spec.id] ?? {};
+      let keySet = false;
+      try {
+        keySet = (await vscode.secrets?.get(`deci.key.${spec.id}`)) ? true : false;
+      } catch {
+        keySet = false;
+      }
+      if (!keySet && spec.needsKey) keySet = Boolean(env[`DECI_${upper}_API_KEY`] ?? env.DECI_API_KEY);
+      const envOverridden: string[] = [];
+      if (env.DECI_PROVIDER === spec.id) envOverridden.push("DECI_PROVIDER");
+      if (env[`DECI_${upper}_BASE_URL`]) envOverridden.push(`DECI_${upper}_BASE_URL`);
+      if (env[`DECI_${upper}_MODEL`]) envOverridden.push(`DECI_${upper}_MODEL`);
+      if (env[`DECI_${upper}_API_KEY`]) envOverridden.push(`DECI_${upper}_API_KEY`);
+      providers.push({ spec, baseURL: saved.baseURL ?? spec.defaultBaseURL ?? "", model: saved.model ?? "", keySet, envOverridden });
+    }
+    const vm: SettingsVM = {
+      providers,
+      activeProvider: get<string>("provider") ?? env.DECI_PROVIDER ?? "ollama",
+      routing: get<Record<string, string>>("routing") ?? {},
+      fallback: get<string[]>("fallback") ?? [],
+      allowCloudAi: get<boolean>("allowCloudAi") ?? env.DECI_ALLOW_CLOUD_AI === "1",
+      allowCloudFallback: get<boolean>("allowCloudFallback") ?? env.DECI_ALLOW_CLOUD_FALLBACK === "1",
+      verify: get<boolean>("verify") ?? true,
+      staticOnly: get<boolean>("staticOnly") ?? false,
+      testTimeoutMs: get<number>("testTimeoutMs") ?? 120000,
+      dirty: false,
+    };
+    const nonce = makeNonce();
+    settingsView.html = doc({
+      title: "Deci Settings", css: DECI_CSS, body: buildSettingsHtml(vm), nonce,
+      clientJs: `${BASE_CLIENT_JS}\n${SETTINGS_CLIENT_JS}`,
+    });
+  };
+
+  vscode.commands.registerCommand("deci.newReview", () => openNewReviewPanel());
+  vscode.commands.registerCommand("deci.openDiffReview", (diffText: unknown) => openDiffReview(typeof diffText === "string" ? diffText : undefined));
+  vscode.commands.registerCommand("deci.openSettings", () => openSettingsPanel());
+  vscode.commands.registerCommand("deci.openTests", () => openTestsPanel());
+  vscode.commands.registerCommand("deci.openHistory", () => openHistoryPanel());
+  vscode.commands.registerCommand("deci.compareRuns", () => openHistoryPanel());
+  vscode.commands.registerCommand("deci.showAlternatives", (decisionId: unknown) => {
+    if (!ui) {
+      vscode.window.showInformationMessage?.("Deci: run an analysis first.");
+      return;
+    }
+    const d = ui.queue.find((x) => x.id === decisionId) ?? ui.queue.find((x) => x.status === "rejected") ?? ui.queue[0];
+    if (!d) {
+      vscode.window.showInformationMessage?.("Deci: no decisions to explore alternatives for.");
+      return;
+    }
+    const set = showAlternatives(vscode, d);
+    ui.alternatives = set;
+    void pushSidebar();
+  });
+  vscode.commands.registerCommand("deci.showEvidence", (decisionId: unknown) => {
+    if (!ui) {
+      vscode.window.showInformationMessage?.("Deci: run an analysis first.");
+      return;
+    }
+    const q = typeof decisionId === "string" ? ui.queue.filter((x) => x.id === decisionId) : ui.queue;
+    showEvidence(vscode, q.length ? q : ui.queue);
+  });
+
+  // Single Deci sidebar (WebviewView). Tree providers stay registered as a
+  // degraded fallback; the webview is the primary surface.
+  try {
+    vscode.window.registerWebviewViewProvider?.("deci.sidebar", {
+      resolveWebviewView: (view: {
+        webview: UiWebview & { options?: unknown };
+        onDidDispose?: (cb: () => void) => void;
+      }) => {
+        view.webview.options = { enableScripts: true };
+        sideView = view.webview;
+        void (async () => {
+          try {
+            const b = await gitRun(["rev-parse", "--abbrev-ref", "HEAD"]);
+            if (b.stdout.trim()) branchLabel = b.stdout.trim();
+          } catch {
+            /* keep cached */
+          }
+          if (sideView) {
+            const nonce = makeNonce();
+            sideView.html = doc({
+              title: "Deci", css: DECI_CSS, body: buildSidebarHtml(await sidebarVm()),
+              state: {}, nonce, clientJs: `${BASE_CLIENT_JS}\n${SIDEBAR_CLIENT_JS}`,
+            });
+          }
+        })();
+        view.webview.onDidReceiveMessage?.((raw) => {
+          void onUiMessage((raw ?? {}) as Record<string, unknown>);
+        });
+        view.onDidDispose?.(() => {
+          if (sideView === view.webview) sideView = null;
+        });
+      },
+    });
+  } catch {
+    /* host without WebviewView support keeps trees */
+  }
+
   return {
     providers,
     history: {

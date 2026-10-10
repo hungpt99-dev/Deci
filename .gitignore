@@ -31,6 +31,9 @@ Thumbs.db
 # Local agent / session artifacts
 .ralph-tui/
 
+# Deci local state (notes, decisions, exports) — per-machine, never commit
+.deci/
+
 # Temp
 *.tmp
 *.temp
