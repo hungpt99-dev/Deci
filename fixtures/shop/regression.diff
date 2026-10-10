@@ -1,0 +1,13 @@
+diff --git a/fixtures/shop/src/pricing.ts b/fixtures/shop/src/pricing.ts
+--- a/fixtures/shop/src/pricing.ts
++++ b/fixtures/shop/src/pricing.ts
+@@ -16,7 +16,7 @@ export function lineTotal(item: CartItem): number {
+ }
+
+ export function totalFor(items: CartItem[], discountPct: number): number {
+-  if (discountPct < 0 || discountPct > 50) throw new Error("discount out of range");
++  if (discountPct < 0) throw new Error("discount out of range");
+   const subtotal = items.reduce((n, it) => n + lineTotal(it), 0);
+-  return Math.round(subtotal * (1 - discountPct / 100));
++  return Math.floor(subtotal * (1 - discountPct / 100));
+ }

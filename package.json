@@ -91,6 +91,10 @@
         "title": "Deci: Show History"
       },
       {
+        "command": "deci.showImpactReport",
+        "title": "Deci: Show Impact Report"
+      },
+      {
         "command": "deci.showProvider",
         "title": "Deci: Show LLM Provider"
       },

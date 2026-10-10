@@ -1,0 +1,16 @@
+diff --git a/fixtures/shop/src/pricing.ts b/fixtures/shop/src/pricing.ts
+--- a/fixtures/shop/src/pricing.ts
++++ b/fixtures/shop/src/pricing.ts
+@@ -11,9 +11,11 @@ export interface CartItem {
+   qty: number;
+ }
+
++const CENTS_PER_UNIT = 100;
++
+ /** Line total in cents, before discounts. */
+ export function lineTotal(item: CartItem): number {
+-  return Math.round(item.unit * item.qty * 100);
++  return Math.round(item.unit * item.qty * CENTS_PER_UNIT);
+ }
+
+ export function totalFor(items: CartItem[], discountPct: number): number {

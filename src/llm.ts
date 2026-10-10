@@ -27,10 +27,8 @@ export interface LlmConfig {
   vscodeLm: VscodeLmSettings;
 }
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
+export type { ChatMessage } from "./providers.js";
+// (Single-sourced: index.ts star-exports resolve to one symbol.)
 
 export const PROVIDERS: ProviderId[] = ["openai-byok", "ollama", "vscode-lm"];
 
@@ -122,6 +120,18 @@ export function renderProviderMarkdown(config: LlmConfig): string {
 }
 
 // --- Completion boundary -------------------------------------------------
+// Delegates to the provider-agnostic adapters in providers.ts. This module
+// keeps the historical LlmConfig surface (settings, env, describe) so
+// existing callers and tests are unaffected; new code should prefer
+// providers.ts (registry, capabilities, retry/fallback, routing) directly.
+
+import {
+  sendOnce,
+  specFor,
+  type ChatMessage as ProviderMessage,
+  type HttpFn,
+  type ResolvedProvider,
+} from "./providers.js";
 
 export type FetchFn = (
   url: string,
@@ -129,86 +139,39 @@ export type FetchFn = (
 ) => Promise<{ ok: boolean; status: number; text: string }>;
 
 /** VS Code LM API host hook (editor entitlement). Injected — core has no vscode dep. */
-export type VscodeLmFn = (messages: ChatMessage[], model: string | null) => Promise<string>;
+export type VscodeLmFn = (messages: ProviderMessage[], model: string | null) => Promise<string>;
 
 export interface CompleteOptions {
   fetch?: FetchFn;
   vscodeLm?: VscodeLmFn;
 }
 
-function joinUrl(base: string, path: string): string {
-  return `${base.replace(/\/+$/, "")}${path}`;
-}
-
-function extractContent(provider: ProviderId, raw: string): string {
-  let json: {
-    choices?: Array<{ message?: { content?: string } }>;
-    message?: { content?: string };
-    response?: string;
-  };
-  try {
-    json = JSON.parse(raw) as typeof json;
-  } catch {
-    throw new Error(`${provider} returned non-JSON response`);
-  }
-  const text =
-    json.choices?.[0]?.message?.content ?? json.message?.content ?? json.response ?? "";
-  if (!text.trim()) throw new Error(`${provider} returned empty completion`);
-  return text;
-}
-
 /**
  * Send exactly `messages` to the configured provider and nothing else.
- * Callers build the prompt (e.g. a summary request) — diff/AST stay local
- * unless the caller puts them in the prompt. BYOK posts OpenAI-compatible
- * `/chat/completions`; Ollama posts `/api/chat` (local host by default);
- * vscode-lm delegates to the editor and never touches HTTP.
+ * Behavior-preserving delegate to providers.sendOnce: same endpoints,
+ * same auth, same validation order. Throws classified ProviderError
+ * (an Error subclass — existing `rejects(/.../)` assertions still match).
  */
 export async function complete(
-  messages: ChatMessage[],
+  messages: ProviderMessage[],
   config: LlmConfig,
   opts: CompleteOptions = {},
 ): Promise<string> {
-  if (messages.length === 0) throw new Error("complete requires at least one message");
-  if (config.provider === "vscode-lm") {
-    if (!opts.vscodeLm) throw new Error("vscode-lm requires the VS Code host (no HTTP fallback)");
-    return opts.vscodeLm(messages, config.vscodeLm.model);
-  }
-  const fetch = opts.fetch ?? defaultFetch;
-  if (config.provider === "openai-byok") {
-    const v = validateConfig(config);
-    if (!v.ok) throw new Error(`openai-byok misconfigured — missing: ${v.missing.join(", ")}`);
-    const res = await fetch(joinUrl(config.openai.baseURL, "/chat/completions"), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${config.openai.apiKey}`,
-      },
-      body: JSON.stringify({ model: config.openai.model, messages }),
-    });
-    if (!res.ok) throw new Error(`openai-byok HTTP ${res.status}: ${res.text.slice(0, 300)}`);
-    return extractContent("openai-byok", res.text);
-  }
-  // ollama — local by default; only the LLM call needs the daemon.
-  const v = validateConfig(config);
-  if (!v.ok) throw new Error(`ollama misconfigured — missing: ${v.missing.join(", ")}`);
-  const res = await fetch(joinUrl(config.ollama.baseURL, "/api/chat"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: config.ollama.model, messages, stream: false }),
-  });
-  if (!res.ok) throw new Error(`ollama HTTP ${res.status}: ${res.text.slice(0, 300)}`);
-  return extractContent("ollama", res.text);
-}
-
-async function defaultFetch(
-  url: string,
-  init: { method: string; headers: Record<string, string>; body: string },
-): Promise<{ ok: boolean; status: number; text: string }> {
-  const res = await fetch(url, {
-    method: init.method,
-    headers: init.headers,
-    body: init.body,
-  });
-  return { ok: res.ok, status: res.status, text: await res.text() };
+  const spec = specFor(config.provider) ?? specFor("ollama");
+  if (!spec) throw new Error(`unknown provider: ${config.provider}`);
+  // "openai-byok" resolves to the openai spec via registry alias.
+  const resolved: ResolvedProvider = {
+    spec,
+    baseURL: spec.id === "openai" ? config.openai.baseURL : spec.id === "ollama" ? config.ollama.baseURL : spec.defaultBaseURL,
+    apiKey: spec.id === "openai" ? config.openai.apiKey : "",
+    hasKey: spec.id === "openai" ? config.openai.apiKey !== "" : false,
+    model: spec.id === "openai" ? config.openai.model : spec.id === "ollama" ? config.ollama.model : (config.vscodeLm.model ?? ""),
+    capabilities: { ...spec.capabilities },
+    dataClass: spec.local ? "local" : "cloud",
+  };
+  const fetch: HttpFn | undefined = opts.fetch
+    ? (url, init) => opts.fetch!(url, { method: init.method, headers: init.headers, body: init.body ?? "" }).then((r) => ({ ok: r.ok, status: r.status, text: r.text }))
+    : undefined;
+  const res = await sendOnce(resolved, { messages }, { fetch, vscodeLm: opts.vscodeLm });
+  return res.text;
 }

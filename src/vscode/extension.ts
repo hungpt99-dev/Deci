@@ -312,6 +312,16 @@ export function showDecisions(vscode: Vscode, diffText: string): DecisionPoint[]
   return queue;
 }
 
+/**
+ * Impact report webview: renders prebuilt interactive HTML (from the CLI
+ * `analyze --html` pipeline or host-assembled snapshots). This function
+ * only displays; analysis stays in the pure core / CLI path.
+ */
+export function showImpactReport(vscode: Vscode, html: string): void {
+  const panel = vscode.window.createWebviewPanel("deci.impact", "Impact Report", 1, {});
+  panel.webview.html = html;
+}
+
 const SEVERITIES: Severity[] = ["Critical", "High", "Medium", "Low"];
 
 /**
@@ -502,6 +512,9 @@ export function activate(vscode: Vscode): {
     ),
   );
   vscode.commands.registerCommand("deci.showProvider", () => showProviderStatus(vscode));
+  vscode.commands.registerCommand("deci.showImpactReport", (html: unknown) => {
+    if (typeof html === "string" && html) showImpactReport(vscode, html);
+  });
   return {
     providers,
     history: {

@@ -63,4 +63,62 @@ describe("semantic", () => {
     assert.deepEqual(parseFileHunks(""), []);
     assert.ok(analyzeFile({ path: "x.ts", added: [], removed: [] }).length === 0);
   });
+
+  it("reports diff-backed line numbers and hunk-local before", () => {
+    const hunks = parseFileHunks(
+      file("src/auth/login.ts", "@@ -10,2 +20,2 @@\n-const old = 1;\n+jwt.verify(token);"),
+    );
+    assert.equal(hunks.length, 1);
+    assert.deepEqual(hunks[0]?.addedLines, [20]);
+    assert.deepEqual(hunks[0]?.addedBefore, [["const old = 1;"]]);
+    const findings = analyzeSemantics(
+      file("src/auth/login.ts", "@@ -10,2 +20,2 @@\n-const old = 1;\n+jwt.verify(token);"),
+    );
+    const sec = findings.find((f) => f.type === "SECURITY_DECISION");
+    assert.ok(sec);
+    assert.equal(sec.line, 20);
+    assert.equal(sec.before, "const old = 1;");
+    assert.ok(sec.id.includes("src/auth/login.ts:20:"));
+  });
+
+  it("leaves before empty on pure additions instead of borrowing unrelated lines", () => {
+    const findings = analyzeSemantics(
+      file("src/a.ts", "@@ -1,0 +1,2 @@\n+import payload from 'event-stream';\n+export const x = 1;"),
+    );
+    const dep = findings.find((f) => f.type === "DEPENDENCY_DECISION");
+    assert.ok(dep);
+    assert.equal(dep.before, "");
+  });
+
+  it("pairs each added line with its nearest hunk-local before", () => {
+    const findings = analyzeSemantics(
+      file("src/p.ts", "@@ -1,2 +1,2 @@\n-if (discountPct > 50) throw new Error();\n+if (discountPct < 0) throw new Error();\n-return Math.round(x);\n+return Math.floor(x);"),
+    );
+    const first = findings.find((f) => f.after.includes("discountPct < 0"));
+    assert.equal(first?.before, "if (discountPct > 50) throw new Error();");
+  });
+
+  it("flags removed capability lines and never drops deleted files", () => {
+    const deleted = [
+      `diff --git a/src/auth/legacy.ts b/src/auth/legacy.ts`,
+      `--- a/src/auth/legacy.ts`,
+      `+++ /dev/null`,
+      `@@ -1,1 +0,0 @@`,
+      `-jwt.verify(token);`,
+    ].join("\n");
+    const hunks = parseFileHunks(deleted);
+    assert.equal(hunks.length, 1);
+    assert.equal(hunks[0]?.path, "src/auth/legacy.ts");
+    const findings = analyzeSemantics(deleted);
+    assert.ok(findings.length >= 1);
+    assert.ok(findings.some((f) => f.type === "SECURITY_DECISION" && f.line === null));
+  });
+
+  it("classifies route-table and router changes as contract decisions", () => {
+    const diff = file("src/api.ts", `@@ -1,1 +1,1 @@\n-{ method: "POST", path: "/checkout", handler: "checkout" },\n+{ method: "POST", path: "/v2/checkout", handler: "checkout" },`);
+    const findings = analyzeSemantics(diff);
+    assert.ok(findings.some((f) => f.type === "API_CONTRACT_DECISION" && f.after.includes("/v2/checkout")));
+    const router = analyzeSemantics(file("src/r.ts", "@@ -1,0 +1,1 @@\n+router.post(\"/pay\", handler);"));
+    assert.ok(router.some((f) => f.type === "API_CONTRACT_DECISION"));
+  });
 });

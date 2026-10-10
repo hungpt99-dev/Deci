@@ -12,6 +12,7 @@ import type { SemanticFinding } from "./semantic.js";
 
 const f = (over: Partial<SemanticFinding> & { id: string }): SemanticFinding => ({
   file: "src/pay.ts",
+  line: null,
   language: "typescript",
   category: "data",
   type: "CONSISTENCY_DECISION",

@@ -26,6 +26,8 @@ export type FindingType =
 export interface SemanticFinding {
   id: string;
   file: string;
+  /** 1-based new-file line of the matched added line; null when not established. */
+  line: number | null;
   language: string;
   category: SemanticCategory;
   type: FindingType;
@@ -55,30 +57,86 @@ export interface FileHunk {
   path: string;
   added: string[];
   removed: string[];
+  /**
+   * 1-based new-file line for each entry of `added` (from `@@` headers;
+   * sequential from 1 when the diff carries no headers, e.g. synthesized
+   * manual diffs).
+   */
+  addedLines?: number[];
+  /** Hunk-local removed lines backing each entry of `added` (the `before` context). */
+  addedBefore?: string[][];
+  /** Unchanged ` ` context lines (enclosing code, e.g. the function header). */
+  context?: string[];
+}
+
+function stripGitPrefix(p: string): string {
+  return p.startsWith("a/") || p.startsWith("b/") ? p.slice(2) : p;
+}
+
+function parseHunkHeader(line: string): number | null {
+  const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+  return m ? parseInt(m[1] as string, 10) : null;
 }
 
 /** Parse unified diff keeping added/removed line text. Unknown input → [], never throws. */
 export function parseFileHunks(diffText: string): FileHunk[] {
   const files: FileHunk[] = [];
   if (!diffText.trim()) return files;
-  let current: FileHunk | null = null;
-  const flush = () => {
-    if (current && current.path && current.path !== "/dev/null") files.push(current);
+  type Hunk = FileHunk & { addedLines: number[]; addedBefore: string[][]; context: string[] };
+  let current: Hunk | null = null;
+  let oldPath: string | null = null;
+  let hunkRemoved: string[] = [];
+  let nextNewLine = -1;
+  let fallbackLine = 1;
+  const flush = (): void => {
+    if (current !== null && current.path && current.path !== "/dev/null") files.push(current);
     current = null;
   };
   for (const line of diffText.split("\n")) {
-    if (line.startsWith("+++ b/")) {
-      flush();
-      current = { path: line.slice(6).trim(), added: [], removed: [] };
-    } else if (line.startsWith("+++ ") && !current) {
+    if (line.startsWith("diff --git ")) continue;
+    if (line.startsWith("--- ")) {
+      oldPath = line.slice(4).trim();
       continue;
-    } else if (line.startsWith("--- a/") && current?.path === "/dev/null") {
-      current.path = line.slice(6).trim();
-    } else if (line.startsWith("+") && !line.startsWith("+++")) {
-      current?.added.push(line.slice(1));
-    } else if (line.startsWith("-") && !line.startsWith("---")) {
-      current?.removed.push(line.slice(1));
     }
+    if (line.startsWith("+++ ")) {
+      flush();
+      const raw = line.slice(4).trim();
+      const fresh = raw === "/dev/null" ? (oldPath ?? "/dev/null") : raw;
+      oldPath = null;
+      hunkRemoved = [];
+      nextNewLine = -1;
+      fallbackLine = 1;
+      current = { path: stripGitPrefix(fresh.trim()), added: [], removed: [], addedLines: [], addedBefore: [], context: [] };
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      hunkRemoved = [];
+      nextNewLine = parseHunkHeader(line) ?? -1;
+      continue;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      if (current === null) continue;
+      current.added.push(line.slice(1));
+      // Header-backed line when available, else sequential from 1
+      // (synthesized diffs carry no `@@` headers).
+      current.addedLines.push(nextNewLine > 0 ? nextNewLine : fallbackLine);
+      current.addedBefore.push([...hunkRemoved]);
+      if (nextNewLine > 0) nextNewLine += 1;
+      else fallbackLine += 1;
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      if (current === null) continue;
+      current.removed.push(line.slice(1));
+      hunkRemoved.push(line.slice(1));
+      // Context/removed lines do not advance the new-file counter.
+    } else if (line.startsWith(" ") || line === "") {
+      // A truly-empty line inside a hunk is an empty context line (an added
+      // empty line would be "+"). It advances the new-file counter.
+      if (nextNewLine > 0) nextNewLine += 1;
+    }
+    // Unchanged context lines are kept for enclosing-symbol attribution
+    // (symbols.ts); they never create findings (analyzeFile ignores them).
+    if ((line.startsWith(" ") || line === "") && current !== null)
+      current.context.push(line.startsWith(" ") ? line.slice(1) : "");
   }
   flush();
   return files;
@@ -95,6 +153,7 @@ const genericAdapter: LanguageAdapter = {
     { match: /CREATE TABLE|ALTER TABLE|DROP TABLE|ADD COLUMN|migration|@Entity|@Table|@Column/i, category: "data", type: "DATA_MODEL_DECISION", confidence: 0.85, impact: "Schema/migration changed; needs migration + rollback review." },
     { match: /transaction|@Transactional|BEGIN;?|COMMIT|ROLLBACK|outbox|saga/i, category: "data", type: "CONSISTENCY_DECISION", confidence: 0.8, impact: "Transaction/consistency boundary changed; check atomicity." },
     { match: /RequestMapping|@GetMapping|@PostMapping|@PutMapping|@DeleteMapping|@PatchMapping|Router\.|app\.(get|post|put|delete)|openapi|swagger|\.proto\b/i, category: "architecture", type: "API_CONTRACT_DECISION", confidence: 0.8, impact: "API contract surface changed; check consumers." },
+    { match: /router\.(get|post|put|delete|patch)\s*\(|method:\s*["'](?:GET|POST|PUT|DELETE|PATCH)["']/i, category: "architecture", type: "API_CONTRACT_DECISION", confidence: 0.8, impact: "Route registration changed; check consumers and contract tests." },
     { match: /^import .* from ['"]|require\(|import java\.|implementation\(|<dependency>|"dependencies"/i, category: "architecture", type: "DEPENDENCY_DECISION", confidence: 0.7, impact: "Dependency set changed; check supply-chain + version drift." },
     { match: /retry|backoff|circuit.?breaker|timeout|deadline|idempoten|@Retryable|AbortController|resilien/i, category: "reliability", type: "RELIABILITY_DECISION", confidence: 0.8, impact: "Retry/timeout/idempotency changed; check failure modes." },
     { match: /cache|memoiz|Redis|useMemo|Promise\.all|parallelStream|CompletableFuture|Executor|synchronized|@Cacheable/i, category: "performance", type: "PERFORMANCE_DECISION", confidence: 0.75, impact: "Caching/concurrency changed; check contention + N+1." },
@@ -141,26 +200,50 @@ export function analyzeFile(hunk: FileHunk): SemanticFinding[] {
   const adapters = [genericAdapter, ...registry.filter((a) => a.matches(hunk.path))];
   const language = languageFor(hunk.path);
   const findings: SemanticFinding[] = [];
-  const changed = [...hunk.added.map((t) => ({ t, side: "+" as const })), ...hunk.removed.map((t) => ({ t, side: "-" as const }))];
+  const lines = hunk.addedLines && hunk.addedLines.length === hunk.added.length
+    ? hunk.addedLines
+    : hunk.added.map((_, i) => i + 1);
+  const befores = hunk.addedBefore && hunk.addedBefore.length === hunk.added.length
+    ? hunk.addedBefore
+    : hunk.added.map(() => hunk.removed);
+  const changed = hunk.added.map((t, i) => ({ t, line: lines[i] as number, before: befores[i] as string[] }));
   let n = 0;
-  for (const { t } of changed) {
+  const pushFinding = (t: string, line: number | null, before: string, r: SemanticRule): void => {
+    if (n >= MAX_FINDINGS_PER_FILE) return;
+    n += 1;
+    findings.push({
+      id: `${hunk.path}:${line ?? `del${n}`}:${r.type}`,
+      file: hunk.path,
+      line,
+      language,
+      category: r.category,
+      type: r.type,
+      before: before.trim().slice(0, 300),
+      after: t.trim().slice(0, 300),
+      impact: r.impact,
+      confidence: r.confidence,
+      uncertain: r.confidence < 0.6,
+    });
+  };
+  for (const { t, line, before } of changed) {
     for (const a of adapters) {
       for (const r of a.rules) {
         if (!r.match.test(t)) continue;
-        if (n >= MAX_FINDINGS_PER_FILE) break;
-        n += 1;
-        findings.push({
-          id: `${hunk.path}:${n}:${r.type}`,
-          file: hunk.path,
-          language,
-          category: r.category,
-          type: r.type,
-          before: hunk.removed[0] ?? "",
-          after: t.trim().slice(0, 300),
-          impact: r.impact,
-          confidence: r.confidence,
-          uncertain: r.confidence < 0.6,
-        });
+        // Hunk-local `before`: the most recent removed line(s) this hunk
+        // replaced (index-paired when the hunk aligns, nearest otherwise).
+        // Pure additions have no `before` — "" says so instead of
+        // borrowing an unrelated removed line from elsewhere.
+        pushFinding(t, line, before[before.length - 1] ?? "", r);
+      }
+    }
+  }
+  // Removed lines carry signal too (e.g. a deleted auth check). They have
+  // no new-file line, so `line` is null and the removed text is the `before`.
+  for (const t of hunk.removed) {
+    for (const a of adapters) {
+      for (const r of a.rules) {
+        if (!r.match.test(t)) continue;
+        pushFinding("(removed)", null, t, r);
       }
     }
   }
@@ -169,6 +252,7 @@ export function analyzeFile(hunk: FileHunk): SemanticFinding[] {
     findings.push({
       id: `${hunk.path}:1:BEHAVIOR_CHANGE`,
       file: hunk.path,
+      line: lines[0] ?? 1,
       language,
       category: "business",
       type: "BEHAVIOR_CHANGE",

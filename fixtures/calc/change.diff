@@ -1,0 +1,10 @@
+diff --git a/calc.mjs b/calc.mjs
+--- a/calc.mjs
++++ b/calc.mjs
+@@ -6,5 +6,5 @@
+ export function totalFor(items, discountPct) {
+-  if (discountPct < 0 || discountPct > 50) throw new RangeError("discount out of range");
++  if (discountPct < 0) throw new RangeError("discount out of range");
+   const subtotal = 1;
+   return subtotal;
+ }

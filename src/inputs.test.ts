@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  assertSafeRange,
   buildManualDiff,
   collectDiffText,
   describeDiffSpec,
+  diffArgsFor,
   diffCommandFor,
+  looksLikeDiff,
   parseDiffArgs,
   renderInputsMarkdown,
   resolveRefInput,
@@ -50,7 +53,8 @@ describe("inputs", () => {
   });
 
   it("reads single file and synthesizes folder picks via listFiles", () => {
-    assert.equal(collectDiffText({ kind: "file", path: "a.diff" }, io({ read: () => "DIFF" })), "DIFF");
+    const raw = "diff --git a/a.diff b/a.diff\n+++ b/a.diff\n@@ -0,0 +1,1 @@\n+DIFF";
+    assert.equal(collectDiffText({ kind: "file", path: "a.diff" }, io({ read: () => raw })), raw);
     const text = collectDiffText(
       { kind: "file", path: "picked" },
       io({ listFiles: () => ["a.ts", "b.ts"], read: (p) => `content of ${p}` }),
@@ -92,5 +96,49 @@ describe("inputs", () => {
     assert.match(md, /✗ https:\/\/docs\/x \(unreachable\)/);
     assert.match(renderInputsMarkdown({ kind: "working" }, { text: null, unreachable: false, ref: null }, { text: null, unreachable: false, ref: null }), /— not provided/);
     assert.ok(describeDiffSpec({ kind: "file", path: "p" }).includes("manual pick"));
+  });
+
+  it("rejects shell metacharacters in --diff ranges on every exec path", () => {
+    for (const range of ["main; touch /tmp/pwn", "HEAD$(id)", "a|b", "x`y`", "a'b", 'a"b', "a\nb"]) {
+      assert.throws(() => assertSafeRange(range), /unsafe --diff range/);
+      assert.throws(
+        () => collectDiffText({ kind: "range", range }, io({ exec: () => "never" })),
+        /unsafe --diff range/,
+      );
+      assert.throws(
+        () => collectDiffText({ kind: "range", range }, io({ execArgv: () => "never" })),
+        /unsafe --diff range/,
+      );
+    }
+    // Legit refs and ranges still pass.
+    for (const range of ["main...HEAD", "a..b", "HEAD~3", "v1.2.0", "feature/x-y_z"]) {
+      assert.doesNotThrow(() => assertSafeRange(range));
+    }
+  });
+
+  it("prefers shell-free argv exec and separates refs with --", () => {
+    let seen: string[] | null = null;
+    const text = collectDiffText(
+      { kind: "range", range: "main...HEAD" },
+      io({ exec: () => "legacy", execArgv: (a) => { seen = a; return "ARGV-DIFF"; } }),
+    );
+    assert.equal(text, "ARGV-DIFF");
+    assert.deepEqual(seen, ["diff", "main...HEAD", "--"]);
+    assert.deepEqual(diffArgsFor({ kind: "staged" }), ["diff", "--staged", "--"]);
+    assert.deepEqual(diffArgsFor({ kind: "working" }), ["diff", "HEAD", "--"]);
+    assert.equal(diffArgsFor({ kind: "file", path: "x" }), null);
+  });
+
+  it("wraps a raw source file as an all-added diff instead of reporting no changes", () => {
+    assert.equal(looksLikeDiff("diff --git a/x b/x\n+++ b/x\n+1"), true);
+    assert.equal(looksLikeDiff("export const a = 1;\n"), false);
+    const text = collectDiffText(
+      { kind: "file", path: "src/a.ts" },
+      io({ read: () => "export const a = 1;" }),
+    );
+    const parsed = parseUnifiedDiff(text);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0]?.path, "src/a.ts");
+    assert.equal(parsed[0]?.added, 1);
   });
 });

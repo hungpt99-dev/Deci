@@ -74,4 +74,34 @@ describe("reviewMap", () => {
     assert.equal(map.totalLoc, 0);
     assert.equal(map.estimatedFullReviewMinutes, 0);
   });
+
+  it("never drops deleted or new files (--- / +++ /dev/null pairs)", () => {
+    const deleted = [
+      `diff --git a/src/auth/legacy.ts b/src/auth/legacy.ts`,
+      `--- a/src/auth/legacy.ts`,
+      `+++ /dev/null`,
+      `@@ -1,2 +0,0 @@`,
+      `-export const x = 1;`,
+      `-export const y = 2;`,
+    ].join("\n");
+    const map = buildReviewMap(deleted);
+    assert.equal(map.fileCount, 1);
+    assert.equal(map.files[0]?.path, "src/auth/legacy.ts");
+    assert.equal(map.totalRemoved, 2);
+    assert.equal(map.totalAdded, 0);
+    // auth path still classifies Critical even when deleted.
+    assert.equal(map.riskDistribution.Critical.files, 1);
+
+    const created = [
+      `--- /dev/null`,
+      `+++ b/src/new/util.ts`,
+      `@@ -0,0 +1,2 @@`,
+      `+export const a = 1;`,
+      `+export const b = 2;`,
+    ].join("\n");
+    const createdMap = buildReviewMap(created);
+    assert.equal(createdMap.fileCount, 1);
+    assert.equal(createdMap.files[0]?.path, "src/new/util.ts");
+    assert.equal(createdMap.totalAdded, 2);
+  });
 });

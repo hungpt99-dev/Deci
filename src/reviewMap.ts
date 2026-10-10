@@ -67,29 +67,49 @@ export function classifyRisk(path: string): RiskLevel {
   return "Medium";
 }
 
-/** Parse a unified git diff into per-file line counts. Unknown input → empty, never throws. */
+function stripGitPrefix(p: string): string {
+  return p.startsWith("a/") || p.startsWith("b/") ? p.slice(2) : p;
+}
+
+/**
+ * Parse a unified git diff into per-file line counts. Unknown input →
+ * empty, never throws. Handles new files (--- /dev/null), deleted files
+ * (+++ /dev/null), and renames (diff --git header) — deleted files are
+ * review-relevant and must never be silently dropped.
+ */
 export function parseUnifiedDiff(diffText: string): Omit<FileChange, "module" | "service" | "risk">[] {
   const files: Omit<FileChange, "module" | "service" | "risk">[] = [];
   if (!diffText.trim()) return files;
-  const lines = diffText.split("\n");
-  let current: { path: string; added: number; removed: number } | null = null;
-  const flush = () => {
-    if (current) files.push({ ...current });
+  type Entry = { path: string; added: number; removed: number };
+  let current: Entry | null = null;
+  // `---`/`+++` pair seen for the file whose hunk lines follow.
+  let oldPath: string | null = null;
+  let gitPaths: [string, string] | null = null;
+  const flush = (): void => {
+    if (current && current.path && current.path !== "/dev/null") files.push({ ...current });
     current = null;
   };
-  for (const line of lines) {
-    if (line.startsWith("+++ b/")) {
-      flush();
-      current = { path: line.slice(6).trim(), added: 0, removed: 0 };
-    } else if (line.startsWith("+++ ") && !current) {
-      // /dev/null (deletion) or non-git diff: resolve path from ---/+++ pair below.
+  for (const line of diffText.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const m = line.match(/^diff --git (\S+) (\S+)/);
+      gitPaths = m ? [m[1] as string, m[2] as string] : null;
       continue;
-    } else if (line.startsWith("--- a/") && current?.path === "/dev/null") {
-      current.path = line.slice(6).trim();
+    }
+    if (line.startsWith("--- ")) {
+      oldPath = line.slice(4).trim();
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      flush();
+      const raw = line.slice(4).trim();
+      const fresh = raw === "/dev/null" ? (oldPath ?? gitPaths?.[0] ?? "/dev/null") : raw;
+      oldPath = null;
+      gitPaths = null;
+      current = { path: stripGitPrefix(fresh.trim()), added: 0, removed: 0 };
     } else if (line.startsWith("+") && !line.startsWith("+++")) {
-      if (current) current.added += 1;
+      if (current !== null) current.added += 1;
     } else if (line.startsWith("-") && !line.startsWith("---")) {
-      if (current) current.removed += 1;
+      if (current !== null) current.removed += 1;
     }
   }
   flush();

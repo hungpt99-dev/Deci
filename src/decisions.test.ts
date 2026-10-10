@@ -18,6 +18,7 @@ import type { SemanticFinding } from "./semantic.js";
 
 const f = (over: Partial<SemanticFinding> & { id: string }): SemanticFinding => ({
   file: "src/a.ts",
+  line: null,
   language: "typescript",
   category: "security",
   type: "SECURITY_DECISION",
@@ -115,5 +116,15 @@ describe("decisions", () => {
     const id = q[0]?.id as string;
     assert.equal(decisionSummary(acceptDecision(q, id)).pending, 2);
     assert.match(renderDecisionsMarkdown([]), /No decisions/);
+  });
+
+  it("gutter prefers diff-backed lines and renders file:line provenance", () => {
+    const lined = buildDecisions([f({ id: "a:20", line: 20 })]);
+    assert.equal(gutterMarksFor(lined, () => 42)[0]?.line, 20);
+    assert.match(renderDecisionsMarkdown(lined), /src\/a\.ts:20/);
+    // Line-less decisions (pure removals) still fall back to the caller hook.
+    const unlined = buildDecisions([f({ id: "a:del", line: null })]);
+    assert.equal(gutterMarksFor(unlined, () => 42)[0]?.line, 42);
+    assert.match(renderDecisionsMarkdown(unlined), /`src\/a\.ts`/);
   });
 });

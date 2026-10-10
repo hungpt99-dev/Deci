@@ -36,6 +36,8 @@ export interface DecisionPoint {
   severity: Severity;
   status: DecisionStatus;
   file: string;
+  /** 1-based new-file line from the diff hunk; null when not established (e.g. pure removals). */
+  line: number | null;
   language: string;
   findingType: string;
   category: string;
@@ -108,6 +110,7 @@ function toDecision(f: SemanticFinding, n: number): DecisionPoint {
     severity: severityFor(f.type),
     status: "pending",
     file: f.file,
+    line: f.line,
     language: f.language,
     findingType: f.type,
     category: f.category,
@@ -228,9 +231,10 @@ export function renderDecisionsMarkdown(queue: DecisionPoint[]): string {
   const rows = queue
     .map((d, i) => {
       const ev = d.evidenceLinks.map((e) => `[${e.label}](${e.ref})`).join(" ");
+      const where = d.line ? `\`${d.file}:${d.line}\`` : `\`${d.file}\``;
       const extra =
         d.status === "rejected" ? ` — rejected: ${d.rejectReason} / "${d.constraint}"` : "";
-      return `| ${i + 1} | ${d.severity} | \`${d.file}\` | ${d.findingType} | ${d.confidence.toFixed(2)}${d.uncertain ? " ?" : ""} | ${d.status}${extra} | ${ev} |`;
+      return `| ${i + 1} | ${d.severity} | ${where} | ${d.findingType} | ${d.confidence.toFixed(2)}${d.uncertain ? " ?" : ""} | ${d.status}${extra} | ${ev} |`;
     })
     .join("\n");
   return [
@@ -267,14 +271,16 @@ export interface GutterMark {
 }
 
 /**
- * Pure line mapping: caller supplies per-file 1-based line numbers
- * (e.g. first added-line of each finding's hunk). Missing file → line 1.
+ * Pure line mapping: decisions already carry a diff-backed `line` when the
+ * hunk headers established one; the caller-supplied `lineOfFile` is only
+ * the fallback for line-less decisions (pure removals) and legacy callers.
+ * Missing file → line 1.
  */
 export function gutterMarksFor(queue: DecisionPoint[], lineOfFile: (file: string) => number): GutterMark[] {
   return queue.map((d) => ({
     decisionId: d.id,
     file: d.file,
-    line: Math.max(1, Math.floor(lineOfFile(d.file)) || 1),
+    line: d.line ?? Math.max(1, Math.floor(lineOfFile(d.file)) || 1),
     severity: d.severity,
     icon: gutterIconFor(d.severity),
   }));

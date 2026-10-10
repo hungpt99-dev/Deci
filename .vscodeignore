@@ -14,3 +14,9 @@ dist/**/*.test.js.map
 **/.vscodeignore
 node_modules/**
 .git/**
+fixtures/**
+.kilo/**
+.opencode/**
+.logs/**
+logs/**
+*.log

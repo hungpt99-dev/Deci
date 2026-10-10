@@ -14,6 +14,12 @@ export type DiffSpec =
 export interface InputIo {
   /** Run a local shell command (adapter injects execSync; tests stub). Optional: only git specs need it. */
   exec?: (cmd: string) => string;
+  /**
+   * Preferred git runner: argv without a shell (no interpolation, no
+   * metacharacters). When present, collectDiffText uses it and never
+   * builds a shell string from user-supplied ranges.
+   */
+  execArgv?: (args: string[]) => string;
   exists: (path: string) => boolean;
   read: (path: string) => string;
   /** Null = not a directory (single-file fallback); [] = empty dir. */
@@ -49,6 +55,39 @@ export function diffCommandFor(spec: DiffSpec): string | null {
       return `git diff ${spec.range}`;
     case "working":
       return "git diff HEAD";
+    case "file":
+      return null;
+  }
+}
+
+/**
+ * Git ref/range allowlist: refs, ranges (a..b / a...b), and the revisions
+ * `git diff` accepts. Rejects shell metacharacters so a range can never
+ * escape into a second command — even on the legacy `exec(cmd)` path.
+ */
+const RANGE_RE = /^[A-Za-z0-9_.\/\-~^:@{}+?*[\]\\]+(\.\.\.?[A-Za-z0-9_.\/\-~^:@{}+?*[\]\\]+)?$/;
+
+export function assertSafeRange(range: string): void {
+  if (!RANGE_RE.test(range) || range.length > 256)
+    throw new Error(
+      `unsafe --diff range ${JSON.stringify(range)}: use a ref or range like "main...HEAD" (tip: no git repo? use --file <path>)`,
+    );
+}
+
+/**
+ * Argv form of a diff spec for shell-free execution (`git <args>`, no
+ * interpolation). The trailing `--` separates refs from pathspecs so a
+ * ref starting with `-` cannot become an option. Null = manual read.
+ */
+export function diffArgsFor(spec: DiffSpec): string[] | null {
+  switch (spec.kind) {
+    case "staged":
+      return ["diff", "--staged", "--"];
+    case "range":
+      assertSafeRange(spec.range);
+      return ["diff", spec.range, "--"];
+    case "working":
+      return ["diff", "HEAD", "--"];
     case "file":
       return null;
   }
@@ -105,10 +144,18 @@ export function buildManualDiff(files: Array<{ path: string; content: string }>)
     .join("\n");
 }
 
+/** True when text already carries unified-diff structure; otherwise it is a raw source file. */
+export function looksLikeDiff(text: string): boolean {
+  const head = text.slice(0, 4096).split("\n").slice(0, 20);
+  return head.some((l) => /^(diff --git |--- (a\/|\/dev\/null)|@@ |\+\+\+ )/.test(l));
+}
+
 /**
  * Resolve a DiffSpec to diff text. File specs read one file or, when
  * listFiles returns entries, synthesize via buildManualDiff (folder
- * fallback). Git failures hint at --file instead of hiding the cause.
+ * fallback). A lone source file (not diff-shaped) is wrapped as an
+ * all-added manual diff so it analyzes instead of reporting "No changes".
+ * Git failures hint at --file instead of hiding the cause.
  */
 export function collectDiffText(spec: DiffSpec, io: InputIo): string {
   if (spec.kind === "file") {
@@ -129,12 +176,26 @@ export function collectDiffText(spec: DiffSpec, io: InputIo): string {
       });
       return buildManualDiff(files);
     }
+    let raw: string;
     try {
-      return io.read(spec.path);
+      raw = io.read(spec.path);
     } catch (err) {
       throw new Error(`cannot read ${spec.path}: ${(err as Error).message} (tip: pick a file or folder path)`);
     }
+    if (looksLikeDiff(raw)) return raw;
+    // Raw source file, not a diff: treat the whole file as added lines.
+    return buildManualDiff([{ path: spec.path, content: raw.slice(0, 20000) }]);
   }
+  if (io.execArgv) {
+    const args = diffArgsFor(spec) as string[];
+    try {
+      return io.execArgv(args);
+    } catch (err) {
+      throw new Error(`git diff failed (git ${args.join(" ")}): ${(err as Error).message} (tip: no git repo? use --file <path>)`);
+    }
+  }
+  // Legacy string-exec path: validate the range even though a shell is involved.
+  if (spec.kind === "range") assertSafeRange(spec.range);
   const cmd = diffCommandFor(spec) as string;
   if (!io.exec) throw new Error(`no exec for git diff (${cmd}) (tip: no git repo? use --file <path>)`);
   try {

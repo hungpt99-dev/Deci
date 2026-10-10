@@ -3,7 +3,7 @@
 // Verified Low-risk files collapse into the Review Map "Verified" bucket but
 // stay listed in an expandable <details> section — never silently dropped.
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { classifyRisk, parseUnifiedDiff, type ReviewMap } from "./reviewMap.js";
 
 export type VerifyStatus = "pass" | "fail" | "skip";
@@ -188,10 +188,20 @@ export function runCommandChecks(specs: VerifyCheckSpec[], exec: ExecFn): Verify
   });
 }
 
+/**
+ * Shell-free runner for the fixed allowlisted check commands above.
+ * No user input ever reaches these commands, and splitting on spaces
+ * (they contain no quoting) keeps execution out of a shell entirely.
+ */
 export const defaultExec: ExecFn = (cmd: string) => {
+  const [bin, ...args] = cmd.split(" ").filter(Boolean);
   try {
-    const out = execSync(cmd, { encoding: "utf8", timeout: CMD_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
-    return { exitCode: 0, output: out.slice(-MAX_LOG_CHARS) };
+    const out = execFileSync(bin as string, args, {
+      encoding: "utf8",
+      timeout: CMD_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { exitCode: 0, output: (out as string).slice(-MAX_LOG_CHARS) };
   } catch (err) {
     const e = err as { status?: number; stdout?: string; stderr?: string; message?: string };
     if (e.status === undefined && /ENOENT/.test(e.message ?? "")) throw err;
