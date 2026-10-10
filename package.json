@@ -58,10 +58,54 @@
         {
           "id": "deci.history",
           "name": "History"
+        },
+        {
+          "id": "deci.chat",
+          "name": "Chat"
         }
       ]
     },
     "commands": [
+      {
+        "command": "deci.analyzeWorkspace",
+        "title": "Deci: Analyze Workspace Changes"
+      },
+      {
+        "command": "deci.analyzeStaged",
+        "title": "Deci: Analyze Staged Changes"
+      },
+      {
+        "command": "deci.openChat",
+        "title": "Deci: Open Chat"
+      },
+      {
+        "command": "deci.chat.new",
+        "title": "Deci: New Chat Conversation"
+      },
+      {
+        "command": "deci.chat.delete",
+        "title": "Deci: Delete Chat Conversation"
+      },
+      {
+        "command": "deci.chat.rename",
+        "title": "Deci: Rename Chat Conversation"
+      },
+      {
+        "command": "deci.chat.send",
+        "title": "Deci: Send Chat Message"
+      },
+      {
+        "command": "deci.chat.retry",
+        "title": "Deci: Retry Last Response"
+      },
+      {
+        "command": "deci.chat.toggleFlag",
+        "title": "Deci: Toggle Context Flag"
+      },
+      {
+        "command": "deci.chat.approve",
+        "title": "Deci: Approve Tool Execution"
+      },
       {
         "command": "deci.showReviewMap",
         "title": "Deci: Show Review Map"

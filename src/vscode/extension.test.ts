@@ -69,10 +69,16 @@ function stubVscode(over: { pickPrefix?: string; inputBox?: string; editor?: unk
     },
     workspace: {
       getConfiguration: (_section: string) => ({ get: <T,>(_key: string): T | undefined => undefined }),
+    },
+    languages: {
       registerHoverProvider: () => undefined,
     },
     commands: {
       registerCommand: (id: string, cb: (...args: unknown[]) => unknown) => {
+        // Mirror the real API: duplicate registration throws and fails
+        // activation. This pin caught the deci.showDecisions double-register
+        // that silently killed the extension in a live window.
+        if (commands.has(id)) throw new Error(`command '${id}' already exists`);
         commands.set(id, cb);
         return undefined;
       },
@@ -139,6 +145,42 @@ describe("vscode decorations + commands", () => {
     assert.ok(decorated.flat().some((r) => (r as { line: number }).line === 20));
   });
 
+  it("emits plain {line, character} points — the real host must translate to vscode.Range", () => {
+    // Regression pin for the live-host failure where setDecorations received
+    // plain points and the real API threw. Core stays editor-agnostic here;
+    // host.ts maps these to vscode.Range at the seam.
+    const queue = decisionsForDiff(DIFF);
+    const seen: unknown[][] = [];
+    const editor = {
+      document: { uri: { fsPath: "x" }, lineCount: 10 },
+      setDecorations: (_kind: unknown, ranges: unknown[]) => { seen.push(ranges); },
+    };
+    applyDecisionDecorations(stubVscode({ editor }).vscode, queue, () => 3);
+    for (const ranges of seen) {
+      for (const r of ranges) {
+        assert.deepEqual(Object.keys(r as Record<string, unknown>).sort(), ["character", "line"]);
+      }
+    }
+  });
+
+  it("registers each command exactly once (duplicates fail activation live)", async () => {
+    const solo = stubVscode();
+    const queue = decisionsForDiff(DIFF);
+    registerDecisionCommands(solo.vscode, queue);
+    // showDecisions lives with the other show* commands in activate().
+    assert.ok(!solo.commands.has("deci.showDecisions"));
+    const first = stubVscode();
+    const api = activate(first.vscode, { storageDir: `mem://${Math.random()}`, workspaceRoot: "/repo" });
+    void api;
+    assert.ok(first.commands.has("deci.showDecisions"));
+    // Second activation on a fresh stub must also succeed (no cross-call state).
+    const second = stubVscode();
+    activate(second.vscode, { storageDir: `mem://${Math.random()}`, workspaceRoot: "/repo" });
+    assert.ok(second.commands.has("deci.showDecisions"));
+    assert.ok(second.commands.has("deci.showReviewMap"));
+    assert.ok(second.commands.has("deci.openChat"));
+  });
+
   it("accept/investigate transition, reject requires reason + constraint", async () => {
     const { vscode, commands } = stubVscode({ pickPrefix: "wrong-security", inputBox: "stay consistent" });
     const queue = decisionsForDiff(DIFF);
@@ -172,12 +214,21 @@ describe("vscode decorations + commands", () => {
     const cfg = providerForHost(vscode, { DECI_PROVIDER: "ollama" });
     assert.equal(cfg.provider, "ollama");
     const { providers, history } = activate(vscode);
-    assert.deepEqual(viewIds().sort(), ["deci.alternatives", "deci.decisions", "deci.evidence", "deci.history", "deci.review"]);
+    assert.deepEqual(viewIds().sort(), ["deci.alternatives", "deci.chat", "deci.decisions", "deci.evidence", "deci.history", "deci.review"]);
     const queue = decisionsForDiff(DIFF);
     history.note("review 1", DIFF, queue);
     assert.equal(history.list().length, 1);
     assert.ok(providers["deci.decisions"].nodes.length >= 0);
     assert.ok(noteReview([], "r", DIFF, queue).length === 1);
     assert.ok(createListProvider().getChildren().length === 0);
+  });
+
+  it("showReviewMap populates the evidence sidebar (no stale placeholder)", () => {
+    const { vscode, commands } = stubVscode();
+    const { providers } = activate(vscode);
+    commands.get("deci.showReviewMap")?.(DIFF);
+    const nodes = providers["deci.evidence"].getChildren() as Array<{ label?: unknown }>;
+    assert.ok(nodes.length > 0);
+    assert.ok(!String(nodes[0]?.label ?? "").includes("run analysis first"));
   });
 });

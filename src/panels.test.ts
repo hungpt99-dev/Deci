@@ -42,10 +42,10 @@ const f = (over: Partial<SemanticFinding> & { id: string }): SemanticFinding => 
 });
 
 describe("panels", () => {
-  it("exposes all five Activity Bar views", () => {
+  it("exposes all six Activity Bar views", () => {
     assert.deepEqual(
       PANEL_VIEWS.map((v) => v.id),
-      ["deci.review", "deci.decisions", "deci.alternatives", "deci.evidence", "deci.history"],
+      ["deci.review", "deci.decisions", "deci.alternatives", "deci.evidence", "deci.history", "deci.chat"],
     );
   });
 

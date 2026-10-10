@@ -63,6 +63,11 @@ function usage(): string {
     `                 [--save-results <path>] [--compare <path>] [--ai-explain] [--ai-diagnose] [provider flags]`,
     `  deci tests [--root <dir>] [diff flags]`,
     `  deci providers [--check [--live]] [--provider ID] [--model M] [--base-url U] [--json]`,
+    `  deci chat new [--title T] [--store DIR] [--root DIR]`,
+    `  deci chat list [--store DIR]`,
+    `  deci chat send --id ID --message TEXT [--store DIR] [--root DIR] [provider flags]`,
+    `  deci chat rename --id ID --title T [--store DIR]`,
+    `  deci chat rm --id ID [--store DIR]`,
     ``,
     `Provider flags: --provider ID --model M --base-url U, --route op=ID[:model], --fallback a,b,`,
     `  --allow-cloud-fallback, --allow-cloud-ai. Keys come from the environment only.`,
@@ -222,6 +227,7 @@ async function main(): Promise<number> {
   const [, , command, ...rest] = process.argv;
   if (command === "tests") return runTestsCommand(rest);
   if (command === "providers") return runProvidersCommand(rest);
+  if (command === "chat") return runChatCommand(rest);
   if (command !== "analyze") {
     console.error(usage());
     return 1;
@@ -459,9 +465,196 @@ async function main(): Promise<number> {
   return needsDecision ? 2 : 0;
 }
 
+/** `deci chat`: conversation management + message sending over the real engine. */
+async function runChatCommand(rest: string[]): Promise<number> {
+  const { FileConversationStore } = await import("./chatStore.js");
+  const { createConversation, renameConversation, validateTitle } = await import("./chat.js");
+  const { ChatEngine } = await import("./chatEngine.js");
+  const sub = rest[0] ?? "list";
+  const storeDir = argValue(rest, "--store") ?? join(process.cwd(), ".deci", "chat");
+  const root = argValue(rest, "--root") ?? process.cwd();
+  const io = {
+    async readFile(p: string): Promise<string | null> {
+      try {
+        return readFileSync(p, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    async writeFile(p: string, c: string): Promise<void> {
+      writeFileSync(p, c, "utf8");
+    },
+    async deleteFile(p: string): Promise<void> {
+      try {
+        const { unlinkSync } = await import("node:fs");
+        unlinkSync(p);
+      } catch {
+        /* gone */
+      }
+    },
+    async listFiles(d: string): Promise<string[]> {
+      try {
+        return readdirSync(d);
+      } catch {
+        return [];
+      }
+    },
+    async mkdir(d: string): Promise<void> {
+      mkdirSync(d, { recursive: true });
+    },
+  };
+  const store = new FileConversationStore(io, storeDir);
+  if (sub === "new") {
+    const title = argValue(rest, "--title") ?? "New conversation";
+    const err = validateTitle(title);
+    if (err) {
+      console.error(`Error: ${err}`);
+      return 1;
+    }
+    const conv = createConversation(title);
+    await store.create(conv);
+    console.log(JSON.stringify({ id: conv.id, title: conv.title }));
+    return 0;
+  }
+  if (sub === "list") {
+    const all = await store.list();
+    for (const c of all) console.log(`${c.id}  ${c.title}  (${c.messageCount} msgs, updated ${c.updatedAt})`);
+    return 0;
+  }
+  if (sub === "rename") {
+    const id = argValue(rest, "--id");
+    const title = argValue(rest, "--title");
+    if (!id || !title) {
+      console.error("Usage: deci chat rename --id ID --title TITLE");
+      return 1;
+    }
+    const conv = await store.get(id);
+    if (!conv) {
+      console.error(`Conversation not found: ${id}`);
+      return 1;
+    }
+    await store.update(renameConversation(conv, title));
+    console.log(`Renamed ${id} to ${title}`);
+    return 0;
+  }
+  if (sub === "rm") {
+    const id = argValue(rest, "--id");
+    if (!id) {
+      console.error("Usage: deci chat rm --id ID");
+      return 1;
+    }
+    await store.delete(id);
+    console.log(`Deleted ${id}`);
+    return 0;
+  }
+  if (sub === "send") {
+    const id = argValue(rest, "--id");
+    const message = argValue(rest, "--message");
+    if (!id || !message) {
+      console.error("Usage: deci chat send --id ID --message TEXT [--root DIR] [--store DIR] [provider flags]");
+      return 1;
+    }
+    const engine = new ChatEngine({
+      store,
+      contextIo: {
+        workspaceRoot: root,
+        readFile: async (p: string) => {
+          try {
+            return readFileSync(p.startsWith("/") ? p : join(root, p), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        exists: async (p: string) => existsSync(p.startsWith("/") ? p : join(root, p)),
+        listFiles: async (r: string) => listDiscoverFiles(r),
+        git: async (args: string[]) => {
+          try {
+            const out = execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }) as string;
+            return { stdout: out, stderr: "", exitCode: 0 };
+          } catch (e: unknown) {
+            const err = e as { stdout?: string; stderr?: string; status?: number };
+            return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", exitCode: err.status ?? 1 };
+          }
+        },
+        exec: async (cmd: string, args: string[], o: { cwd?: string; timeoutMs?: number } = {}) => {
+          try {
+            const out = execFileSync(cmd, args, { cwd: o.cwd ?? root, encoding: "utf8", timeout: o.timeoutMs ?? 60000, maxBuffer: 10 * 1024 * 1024 }) as string;
+            return { stdout: out, stderr: "", exitCode: 0 };
+          } catch (e: unknown) {
+            const err = e as { stdout?: string; stderr?: string; status?: number };
+            return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", exitCode: err.status ?? 1 };
+          }
+        },
+      },
+      providerInput: providerInputFromFlags(rest),
+      env: process.env as Record<string, string | undefined>,
+      policy: policyFromFlags(rest, process.env as Record<string, string | undefined>),
+      toolContext: {
+        workspaceRoot: root,
+        readFile: async (p: string) => {
+          try {
+            return readFileSync(p.startsWith("/") ? p : join(root, p), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        writeFile: async (p: string, c: string) => {
+          writeFileSync(p.startsWith("/") ? p : join(root, p), c, "utf8");
+        },
+        exists: async (p: string) => existsSync(p.startsWith("/") ? p : join(root, p)),
+        listFiles: async (r: string) => listDiscoverFiles(r),
+        git: async (args: string[]) => {
+          try {
+            const out = execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }) as string;
+            return { stdout: out, stderr: "", exitCode: 0 };
+          } catch (e: unknown) {
+            const err = e as { stdout?: string; stderr?: string; status?: number };
+            return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", exitCode: err.status ?? 1 };
+          }
+        },
+        exec: async (cmd: string, args: string[], o: { cwd?: string; timeoutMs?: number } = {}) => {
+          try {
+            const out = execFileSync(cmd, args, { cwd: o.cwd ?? root, encoding: "utf8", timeout: o.timeoutMs ?? 60000, maxBuffer: 10 * 1024 * 1024 }) as string;
+            return { stdout: out, stderr: "", exitCode: 0 };
+          } catch (e: unknown) {
+            const err = e as { stdout?: string; stderr?: string; status?: number };
+            return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", exitCode: err.status ?? 1 };
+          }
+        },
+      },
+      onApprovalNeeded: async () => false,
+    });
+    try {
+      const res = await engine.sendMessage(id, message);
+      const conv = await store.get(id);
+      const last = conv?.messages[conv.messages.length - 1];
+      if (rest.includes("--json")) {
+        console.log(JSON.stringify({ content: last?.content ?? res.message.content, blocks: res.message.blocks ?? [], warnings: res.message.blockWarnings ?? [] }, null, 2));
+      } else if (res.message.blocks?.length) {
+        const { renderBlocksText } = await import("./blocks.js");
+        console.log(renderBlocksText(res.message.blocks));
+        if (res.message.blockWarnings?.length) {
+          for (const w of res.message.blockWarnings) console.error(`Block warning: ${w}`);
+        }
+      } else {
+        console.log(last?.content ?? res.message.content);
+      }
+      if (res.error) {
+        console.error(`chat error: ${res.error}`);
+        return 1;
+      }
+      return 0;
+    } catch (e) {
+      console.error(`Error: ${(e as Error).message}`);
+      return 1;
+    }
+  }
+  console.error("Usage: deci chat {new|list|send|rename|rm} ...");
+  return 1;
+}
+
 /** Provider + connection input from flags (generic) with legacy per-provider flags. Keys come from env only. */
-function providerInputFromFlags(rest: string[]): ProviderInput {
-  return {
+function providerInputFromFlags(rest: string[]): ProviderInput {  return {
     provider: argValue(rest, "--provider") ?? undefined,
     baseURL: argValue(rest, "--base-url") ?? argValue(rest, "--openai-base-url") ?? undefined,
     model: argValue(rest, "--model") ?? argValue(rest, "--openai-model") ?? argValue(rest, "--ollama-model") ?? undefined,

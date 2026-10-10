@@ -1,6 +1,9 @@
 // VS Code host: Review Map webview (US-001) + ranked decision queue with
 // gutter icons + hover cards + Accept/Reject/Investigate commands (US-004).
 // Core stays pure in decisions.ts; this file is the thin editor adapter.
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildManualDiff,
   renderInputsMarkdown,
@@ -72,11 +75,31 @@ import {
   type PanelNode,
   type PanelViewId,
 } from "../panels.js";
+import { buildChatHtml } from "../chatView.js";
+import {
+  addMessage,
+  createConversation,
+  newMessageId,
+  renameConversation,
+  updateContextFlags,
+  type BlockSelection,
+  type ChatMessageItem,
+  type Conversation,
+  type ConversationMeta,
+} from "../chat.js";
+import { ACTION_REGISTRY, type ActionName } from "../blocks.js";
+import { applyFixAfterApproval, executeTool, proposeFixStructured } from "../chatTools.js";
+import { FileConversationStore } from "../chatStore.js";
+import { ChatEngine } from "../chatEngine.js";
 
 type Vscode = {
   window: {
     createWebviewPanel(viewType: string, title: string, column: number, options: unknown): {
-      webview: { html: string };
+      webview: {
+        html: string;
+        onDidReceiveMessage?(cb: (msg: Record<string, unknown>) => void): unknown;
+        postMessage?(msg: unknown): void;
+      };
     };
     showQuickPick?(items: string[], options?: unknown): Thenable<string | undefined>;
     showInputBox?(options?: unknown): Thenable<string | undefined>;
@@ -89,6 +112,10 @@ type Vscode = {
   };
   workspace: {
     getConfiguration(section: string): { get<T>(key: string): T | undefined };
+    /** Real-fs adapter for ref reads (host injects; tests omit). */
+    fs?: { exists: (path: string) => boolean; read: (path: string) => string };
+  };
+  languages?: {
     registerHoverProvider?(selector: unknown, provider: unknown): unknown;
   };
   commands: { registerCommand(id: string, cb: (...args: unknown[]) => unknown): unknown };
@@ -122,7 +149,7 @@ export function showInputsPanel(
   ticketRaw: string | null,
   docRaw: string | null,
 ): void {
-  const io = { exists: () => false, read: () => "" };
+  const io = vscode.workspace.fs ?? { exists: () => false, read: () => "" };
   const ticket = resolveRefInput(ticketRaw, io);
   const doc = resolveRefInput(docRaw, io);
   const panel = vscode.window.createWebviewPanel("deci.inputs", "Inputs", 1, {});
@@ -150,7 +177,15 @@ export async function promptReviewInputs(
     const range = await vscode.window.showInputBox?.({ prompt: "Branch-vs-base range (e.g. main...HEAD)" });
     spec = { kind: "range", range: range?.trim() ? range.trim() : "main...HEAD" };
   } else if (choice?.startsWith("manual")) {
-    if (opts.manualFiles) return { spec: { kind: "file", path: opts.manualFiles.map((f) => f.path).join(", ") || "manual pick" }, ticket: null, doc: null, manualDiff: buildManualDiff(opts.manualFiles) };
+    if (opts.manualFiles) {
+      const paths = opts.manualFiles.map((f) => f.path);
+      return {
+        spec: { kind: "file", path: paths.length > 1 ? `${paths.length} files` : (paths[0] ?? "manual pick") },
+        ticket: null,
+        doc: null,
+        manualDiff: buildManualDiff(opts.manualFiles),
+      };
+    }
     const picked = await vscode.window.showInputBox?.({ prompt: "File or folder path (no-git fallback)" });
     spec = { kind: "file", path: picked?.trim() ? picked.trim() : "." };
   }
@@ -162,9 +197,11 @@ export async function promptReviewInputs(
 export function showReviewMap(vscode: Vscode, diffText: string): void {
   const report = runFullVerify(diffText, { runCommands: false });
   const map = applyVerification(buildReviewMap(diffText), report.verifiedPaths);
-  const body = `${renderMarkdown(map)}\n${renderDecisionsMarkdown(decisionsForDiff(diffText))}\n${renderVerifyMarkdown(report)}`;
+  const queue = decisionsForDiff(diffText);
+  const body = `${renderMarkdown(map)}\n${renderDecisionsMarkdown(queue)}\n${renderVerifyMarkdown(report)}`;
   const panel = vscode.window.createWebviewPanel("deci.review", "Review Map", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(body)}</pre></body></html>`;
+  applyDecisionDecorations(vscode, queue);
 }
 
 /** US-009: read `deci.provider` + model/baseURL/key settings. Env wins over editor settings. */
@@ -309,6 +346,7 @@ export function showDecisions(vscode: Vscode, diffText: string): DecisionPoint[]
   const queue = decisionsForDiff(diffText);
   const panel = vscode.window.createWebviewPanel("deci.decisions", "Decisions", 1, {});
   panel.webview.html = `<html><body><pre>${escapeHtml(renderDecisionsMarkdown(queue))}</pre></body></html>`;
+  applyDecisionDecorations(vscode, queue);
   return queue;
 }
 
@@ -324,6 +362,11 @@ export function showImpactReport(vscode: Vscode, html: string): void {
 
 const SEVERITIES: Severity[] = ["Critical", "High", "Medium", "Low"];
 
+// The hover provider is registered once per extension host; every decoration
+// call refreshes `hoverQueue` so the card always matches the latest analysis.
+let hoverBound = false;
+let hoverQueue: DecisionPoint[] = [];
+
 /**
  * Gutter icons + hover cards for the ranked queue. Creates one decoration
  * kind per severity (gutter icon), maps each decision to its file's line via
@@ -335,6 +378,7 @@ export function applyDecisionDecorations(
   queue: DecisionPoint[],
   lineOfFile: (file: string) => number = () => 1,
 ): void {
+  hoverQueue = queue;
   const editor = vscode.window.activeTextEditor;
   const createKind = vscode.window.createTextEditorDecorationType;
   if (!editor || !createKind) return;
@@ -352,12 +396,14 @@ export function applyDecisionDecorations(
       .map((m) => ({ line: m.line, character: 0 }));
     editor.setDecorations?.(kind, ranges);
   }
-  vscode.workspace.registerHoverProvider?.("*", {
+  if (hoverBound || !vscode.languages?.registerHoverProvider) return;
+  vscode.languages.registerHoverProvider("*", {
     provideHover(document: { uri: { fsPath: string } }) {
-      const hit = queue.find((d) => document.uri.fsPath.endsWith(d.file));
+      const hit = hoverQueue.find((d) => document.uri.fsPath.endsWith(d.file));
       return hit ? { contents: [hoverMarkdownFor(hit)] } : null;
     },
   });
+  hoverBound = true;
 }
 
 async function promptReject(vscode: Vscode): Promise<{ reason: RejectReason; constraint: string } | null> {
@@ -400,9 +446,10 @@ export function registerDecisionCommands(
     if (!answer) return;
     set(rejectDecision(queue, id, answer.reason, answer.constraint));
   });
-  vscode.commands.registerCommand("deci.showDecisions", (diffText: unknown) =>
-    showDecisions(vscode, typeof diffText === "string" ? diffText : ""),
-  );
+  // NOTE: deci.showDecisions is registered once in activate() alongside the
+  // other show* commands. Registering it here too killed activation outright:
+  // the real API throws on duplicate registration ("already exists"), which
+  // failed the whole extension with no tree data and no working commands.
   return { get: () => queue };
 }
 
@@ -461,22 +508,227 @@ export function viewIds(): PanelViewId[] {
 }
 
 /**
- * US-012: Activity Bar wiring — registers the five sidebar views
- * (Review | Decisions | Alternatives | Evidence | History) plus the full
+ * US-012: Activity Bar wiring — registers the sidebar views
+ * (Review | Decisions | Alternatives | Evidence | History | Chat) plus the full
  * command set: Review Map, Decisions, Alternative Studio A/B/C,
  * implementation plan preview, Generate patch, Verify output, Evidence,
- * output bundle, provider status, History. All local-first, no backend.
+ * output bundle, provider status, History, Chat. All local-first, no backend.
  */
-export function activate(vscode: Vscode): {
+/**
+ * Activity Bar wiring — registers the sidebar views
+ * (Review | Decisions | Alternatives | Evidence | History | Chat) plus the full
+ * command set. Chat uses a file-backed store under the host-provided
+ * storage dir (or cwd fallback in tests) and a ChatEngine over the same
+ * provider/tool/context core as the CLI.
+ */
+export function activate(
+  vscode: Vscode,
+  opts: {
+    storageDir?: string;
+    workspaceRoot?: string;
+    /** Navigate to a workspace file. Host implements with the real editor; omitted = copy-path fallback. */
+    openDocument?: (path: string, line: number | null) => Promise<void>;
+  } = {},
+): {
   providers: Record<PanelViewId, ReturnType<typeof createListProvider>>;
   history: { list(): HistoryEntry[]; note(label: string, diffText: string, queue: DecisionPoint[]): void };
+  chat: {
+    store(): FileConversationStore;
+    engine(): ChatEngine;
+    getActive(): Conversation | null;
+    refresh(): Promise<ConversationMeta[]>;
+    /** Execute a registered block action against the real backend. Exported for tests. */
+    doAction(action: string, params: Record<string, unknown>, approved: boolean): Promise<{ ok: boolean; detail: string }>;
+  };
 } {
+  const workspaceRoot =
+    opts.workspaceRoot ??
+    (vscode as unknown as { workspace?: { workspaceFolders?: Array<{ uri: { fsPath: string } }> } }).workspace?.workspaceFolders?.[0]?.uri?.fsPath ??
+    process.cwd();
+  const storageDir = opts.storageDir ?? join(workspaceRoot, ".deci", "chat");
+
+  const fsIo = {
+    async readFile(p: string): Promise<string | null> {
+      try {
+        return readFileSync(p, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    async writeFile(p: string, c: string): Promise<void> {
+      mkdirSync(join(p.split("/").slice(0, -1).join("/") || "."), { recursive: true });
+      writeFileSync(p, c, "utf8");
+    },
+    async deleteFile(p: string): Promise<void> {
+      try {
+        const { unlinkSync } = await import("node:fs");
+        unlinkSync(p);
+      } catch {
+        /* already gone */
+      }
+    },
+    async listFiles(d: string): Promise<string[]> {
+      try {
+        const { readdirSync } = await import("node:fs");
+        return readdirSync(d);
+      } catch {
+        return [];
+      }
+    },
+    async mkdir(d: string): Promise<void> {
+      mkdirSync(d, { recursive: true });
+    },
+  };
+  const chatStore = new FileConversationStore(fsIo, storageDir);
+
+  const gitRun = async (args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+    try {
+      const out = execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }) as string;
+      return { stdout: out, stderr: "", exitCode: 0 };
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string; status?: number };
+      return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", exitCode: err.status ?? 1 };
+    }
+  };
+  const execRun = async (
+    cmd: string,
+    args: string[],
+    runOpts: { cwd?: string; timeoutMs?: number } = {},
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+    try {
+      const out = execFileSync(cmd, args, {
+        cwd: runOpts.cwd ?? workspaceRoot,
+        encoding: "utf8",
+        timeout: runOpts.timeoutMs ?? 60000,
+        maxBuffer: 10 * 1024 * 1024,
+      }) as string;
+      return { stdout: out, stderr: "", exitCode: 0 };
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string; status?: number };
+      return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", exitCode: err.status ?? 1 };
+    }
+  };
+  const readText = async (p: string): Promise<string | null> => {
+    try {
+      return readFileSync(p.startsWith("/") ? p : join(workspaceRoot, p), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const listWorkspace = async (root: string): Promise<string[] | null> => {
+    try {
+      const { readdirSync, statSync, lstatSync: lstat } = await import("node:fs");
+      const { join: joinPath } = await import("node:path");
+      const out: string[] = [];
+      const walk = (dir: string, rel: string, depth: number): void => {
+        if (depth > 6 || out.length >= 400) return;
+        let entries: string[];
+        try {
+          entries = readdirSync(dir);
+        } catch {
+          return;
+        }
+        for (const e of entries) {
+          if (e === "node_modules" || e === ".git" || e === "dist") continue;
+          const abs = joinPath(dir, e);
+          const rp = rel ? `${rel}/${e}` : e;
+          try {
+            if (lstat(abs).isSymbolicLink()) continue;
+            if (statSync(abs).isDirectory()) walk(abs, rp, depth + 1);
+            else {
+              out.push(rp);
+              if (out.length >= 400) return;
+            }
+          } catch {
+            continue;
+          }
+        }
+      };
+      walk(root, "", 0);
+      return out;
+    } catch {
+      return null;
+    }
+  };
+
+  const contextIo = {
+    workspaceRoot,
+    readFile: readText,
+    exists: async (p: string): Promise<boolean> => existsSync(p.startsWith("/") ? p : join(workspaceRoot, p)),
+    listFiles: listWorkspace,
+    git: gitRun,
+    exec: execRun,
+  };
+  const toolContext = {
+    workspaceRoot,
+    readFile: readText,
+    writeFile: async (p: string, c: string): Promise<void> => {
+      writeFileSync(p.startsWith("/") ? p : join(workspaceRoot, p), c, "utf8");
+    },
+    exists: async (p: string): Promise<boolean> => existsSync(p.startsWith("/") ? p : join(workspaceRoot, p)),
+    listFiles: listWorkspace,
+    git: gitRun,
+    exec: execRun,
+  };
+  const providerSettings = (): Record<string, string | undefined> => {
+    try {
+      const cfg = vscode.workspace.getConfiguration("deci");
+      const get = (k: string): string | undefined => {
+        try {
+          const v = cfg.get<string>(k);
+          return typeof v === "string" && v.trim() ? v : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      void get;
+    } catch {
+      /* tests omit settings */
+    }
+    return {};
+  };
+  void providerSettings;
+  type ChatPanel = { webview: { postMessage?(msg: unknown): void } };
+  const panelHolder: { panel: ChatPanel | null } = { panel: null };
+  const streamHolder: { id: string | null } = { id: null };
+  const postToChat = (msg: unknown): void => {
+    try {
+      panelHolder.panel?.webview.postMessage?.(msg);
+    } catch {
+      /* webview gone */
+    }
+  };
+  const chatEngine = new ChatEngine({
+    store: chatStore,
+    contextIo,
+    providerInput: {},
+    env: { ...process.env },
+    toolContext,
+    onStream: (chunk) => {
+      const id = streamHolder.id;
+      if (id) postToChat({ type: "messageChunk", chunk, messageId: id });
+    },
+    onToolEvent: (event, invocation, result) => {
+      if (event === "start") postToChat({ type: "streamingState", streaming: true });
+      else if (result?.error) postToChat({ type: "toolResult", result });
+      else if (result) postToChat({ type: "toolResult", result });
+    },
+    onApprovalNeeded: async (invocation) => {
+      postToChat({ type: "toolApproval", invocation });
+      const answer = await vscode.window.showQuickPick?.(["Approve", "Reject"], {
+        placeHolder: `Approve tool ${invocation.name}?`,
+      });
+      return answer === "Approve";
+    },
+  });
+
   const providers = {
     "deci.review": createListProvider(buildReviewNodes(buildReviewMap(""))),
     "deci.decisions": createListProvider(buildDecisionNodes([])),
     "deci.alternatives": createListProvider(buildAlternativeNodes(null)),
     "deci.evidence": createListProvider(buildEvidenceNodes([])),
     "deci.history": createListProvider(buildHistoryNodes([])),
+    "deci.chat": createListProvider([]),
   } as Record<PanelViewId, ReturnType<typeof createListProvider>>;
   for (const view of PANEL_VIEWS) {
     vscode.window.registerTreeDataProvider?.(view.id, providers[view.id]);
@@ -490,15 +742,335 @@ export function activate(vscode: Vscode): {
     applyDecisionDecorations(vscode, next);
     providers["deci.decisions"].set(buildDecisionNodes(next));
   });
+
+  let activeConv: Conversation | null = null;
+  const syncChatList = async (): Promise<ConversationMeta[]> => {
+    const conversations = await chatStore.list();
+    providers["deci.chat"].set(
+      conversations.map((c) => ({
+        label: c.title,
+        detail: `${c.messageCount} msgs`,
+        command: "deci.openChat",
+        args: [c.id],
+      })),
+    );
+    return conversations;
+  };
+  // Fire-and-forget initial sync; tests call refresh() explicitly.
+  void syncChatList();
+
+  const pushChat = async (): Promise<void> => {
+    const conversations = await chatStore.list();
+    postToChat({ type: "updateConversations", conversations, activeId: activeConv?.id ?? null });
+    if (activeConv) {
+      const fresh = await chatStore.get(activeConv.id);
+      if (fresh) activeConv = fresh;
+      postToChat({
+        type: "updateMessages",
+        messages: activeConv.messages,
+        contextFlags: activeConv.contextFlags,
+        providerStatus: describeConfig(resolveProviderConfig({}, process.env)),
+      });
+    }
+    await syncChatList();
+  };
+
+  const appendToolMessage = async (name: string, output: string, error?: string): Promise<void> => {
+    if (!activeConv) return;
+    const toolMsg: ChatMessageItem = {
+      role: "tool",
+      content: error ? `Error: ${error}` : output,
+      timestamp: new Date().toISOString(),
+      id: newMessageId(),
+      toolResult: { callId: newMessageId(), name, output, error },
+    };
+    await chatStore.update(addMessage(activeConv, toolMsg));
+    activeConv = await chatStore.get(activeConv.id);
+  };
+
+  /** Registered block actions → real backend operations. Backend re-validates
+   *  everything; approval-gated actions refuse without approved=true. */
+  const doAction = async (
+    action: string,
+    params: Record<string, unknown>,
+    approved: boolean,
+  ): Promise<{ ok: boolean; detail: string }> => {
+    if (!(action in ACTION_REGISTRY)) return { ok: false, detail: `Unknown action: ${action}` };
+    const reg = ACTION_REGISTRY[action as ActionName];
+    if (reg.requiresApproval && !approved) {
+      return { ok: false, detail: `Refused: action ${action} requires explicit approval. Nothing was changed.` };
+    }
+    try {
+      switch (action as ActionName) {
+        case "run_tests": {
+          const paths = typeof params.paths === "string" ? params.paths : "";
+          const res = await executeTool("run_tests", paths ? { paths } : {}, toolContext);
+          if (res.error) {
+            await appendToolMessage("run_tests", "", res.error);
+            await pushChat();
+            return { ok: false, detail: res.error };
+          }
+          await appendToolMessage("run_tests", res.output);
+          await pushChat();
+          return { ok: true, detail: res.output.slice(0, 500) };
+        }
+        case "propose_fix": {
+          const testPath = typeof params.testPath === "string" ? params.testPath : "";
+          if (!testPath) return { ok: false, detail: "propose_fix needs testPath." };
+          const res = await executeTool("propose_fix", { testPath }, toolContext);
+          if (res.error) {
+            await appendToolMessage("propose_fix", "", res.error);
+            await pushChat();
+            return { ok: false, detail: res.error };
+          }
+          await appendToolMessage("propose_fix", res.output);
+          await pushChat();
+          return { ok: true, detail: res.output.slice(0, 500) };
+        }
+        case "apply_fix": {
+          const testPath = typeof params.testPath === "string" ? params.testPath : "";
+          if (!testPath) return { ok: false, detail: "apply_fix needs testPath." };
+          const proposal = await proposeFixStructured(testPath, toolContext);
+          if (!proposal.patch) {
+            const detail = `No mechanical patch for \`${proposal.testPath}\` — fix must be human-authored.`;
+            await appendToolMessage("apply_fix", detail);
+            await pushChat();
+            return { ok: false, detail };
+          }
+          const detail = await applyFixAfterApproval(proposal.patch, proposal.guardLines, toolContext);
+          await appendToolMessage("apply_fix", detail);
+          await pushChat();
+          return { ok: true, detail };
+        }
+        case "explain":
+        case "ask": {
+          const q = typeof params.question === "string" && params.question.trim()
+            ? params.question.trim()
+            : typeof params.label === "string" && params.label.trim()
+              ? `Explain: ${params.label.trim()}`
+              : "Explain the selected item.";
+          const sel: BlockSelection = {
+            kind: typeof params.kind === "string" ? params.kind : "item",
+            label: typeof params.label === "string" ? params.label : q,
+            file: typeof params.file === "string" ? params.file : undefined,
+            line: typeof params.line === "number" ? params.line : null,
+          };
+          if (!activeConv) return { ok: false, detail: "No active conversation." };
+          streamHolder.id = null;
+          await chatEngine.sendMessage(activeConv.id, q, { selection: sel });
+          activeConv = await chatStore.get(activeConv.id);
+          await pushChat();
+          return { ok: true, detail: "Asked with selection context." };
+        }
+        case "open_file": {
+          const r = await openFile(
+            typeof params.path === "string" ? params.path : "",
+            typeof params.line === "number" ? params.line : null,
+          );
+          return r;
+        }
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await appendToolMessage(action, "", detail);
+      await pushChat();
+      return { ok: false, detail };
+    }
+    return { ok: false, detail: `Unhandled action: ${action}` };
+  };
+
+  const openFile = async (path: string, line: number | null): Promise<{ ok: boolean; detail: string }> => {
+    const clean = path.trim().replace(/\\/g, "/");
+    if (!clean || clean.includes("\0") || clean.startsWith("/") || /^[A-Za-z]:\//.test(clean) || clean.split("/").includes("..")) {
+      return { ok: false, detail: `Refused: \`${path}\` is outside the workspace.` };
+    }
+    if (!opts.openDocument) return { ok: false, detail: `Open \`${clean}${line ? `:${line}` : ""}\` in your editor (navigation hook unavailable in this host).` };
+    await opts.openDocument(clean, line);
+    return { ok: true, detail: `Opened ${clean}${line ? `:${line}` : ""}.` };
+  };
+
+  vscode.commands.registerCommand("deci.openChat", async (convId: unknown) => {
+    const conversations = await chatStore.list();
+    const providerConfig = resolveProviderConfig({}, process.env);
+    const target = typeof convId === "string" ? await chatStore.get(convId) : null;
+    activeConv = target ?? (conversations.length > 0 ? await chatStore.get(conversations[0]?.id ?? "") : null);
+    const panel = vscode.window.createWebviewPanel("deci.chat", "Deci Chat", 1, { enableScripts: true });
+    panelHolder.panel = panel as unknown as ChatPanel;
+    panel.webview.html = buildChatHtml(
+      conversations,
+      activeConv?.id ?? null,
+      activeConv?.messages ?? [],
+      activeConv?.contextFlags ?? { activeFile: true, diff: true, impact: true, tests: true, apiContracts: true, docs: true },
+      providerConfig,
+    );
+    panel.webview.onDidReceiveMessage?.(async (raw) => {
+      const msg = (raw ?? {}) as Record<string, unknown>;
+      try {
+        switch (msg.type) {
+          case "selectConversation": {
+            if (typeof msg.conversationId === "string") {
+              activeConv = await chatStore.get(msg.conversationId);
+              await pushChat();
+            }
+            break;
+          }
+          case "newConversation": {
+            const conv = createConversation(typeof msg.title === "string" && msg.title.trim() ? msg.title.trim() : "New conversation");
+            await chatStore.create(conv);
+            activeConv = conv;
+            await pushChat();
+            break;
+          }
+          case "sendMessage": {
+            if (typeof msg.text === "string" && activeConv) {
+              postToChat({ type: "streamingState", streaming: true });
+              const res = await chatEngine.sendMessage(activeConv.id, msg.text);
+              streamHolder.id = null;
+              activeConv = await chatStore.get(activeConv.id);
+              if (res.message.blocks?.length) {
+                postToChat({ type: "blockUpdate", messageId: res.message.id, blocks: res.message.blocks, warnings: res.message.blockWarnings ?? [] });
+              }
+              await pushChat();
+            }
+            break;
+          }
+          case "askAbout": {
+            if (activeConv && msg.selection && typeof msg.selection === "object") {
+              const s = msg.selection as Record<string, unknown>;
+              const sel: BlockSelection = {
+                kind: typeof s.kind === "string" ? s.kind : "item",
+                label: typeof s.label === "string" ? s.label.slice(0, 200) : "selected item",
+                file: typeof s.file === "string" ? s.file : undefined,
+                line: typeof s.line === "number" ? s.line : null,
+              };
+              postToChat({ type: "streamingState", streaming: true });
+              await chatEngine.sendMessage(activeConv.id, `Explain this ${sel.kind}: ${sel.label}`, { selection: sel });
+              activeConv = await chatStore.get(activeConv.id);
+              await pushChat();
+            }
+            break;
+          }
+          case "doAction": {
+            if (typeof msg.action === "string" && msg.params && typeof msg.params === "object") {
+              await doAction(msg.action, msg.params as Record<string, unknown>, msg.approved === true);
+            }
+            break;
+          }
+          case "openFile": {
+            if (typeof msg.path === "string") {
+              const r = await openFile(msg.path, typeof msg.line === "number" || typeof msg.line === "string" && msg.line !== "" ? Number(msg.line) : null);
+              if (!r.ok) postToChat({ type: "error", error: r.detail });
+            }
+            break;
+          }
+          case "toggleContextFlag": {
+            if (activeConv && typeof msg.flag === "string") {
+              const updated = updateContextFlags(activeConv, { [msg.flag]: msg.active === true });
+              await chatStore.update(updated);
+              activeConv = updated;
+              await pushChat();
+            }
+            break;
+          }
+          case "retry": {
+            if (activeConv) {
+              postToChat({ type: "streamingState", streaming: true });
+              await chatEngine.retry(activeConv.id);
+              activeConv = await chatStore.get(activeConv.id);
+              await pushChat();
+            }
+            break;
+          }
+          case "cancel": {
+            chatEngine.cancel();
+            postToChat({ type: "streamingState", streaming: false });
+            break;
+          }
+          case "approveTool": {
+            chatEngine.resolveApproval(true);
+            break;
+          }
+        }
+      } catch (err) {
+        postToChat({ type: "error", error: err instanceof Error ? err.message : String(err) });
+        postToChat({ type: "streamingState", streaming: false });
+      }
+    });
+    await pushChat();
+  });
+  vscode.commands.registerCommand("deci.chat.new", async (title: unknown) => {
+    const name = typeof title === "string" && title.trim()
+      ? title.trim()
+      : await vscode.window.showInputBox?.({ prompt: "Conversation title" });
+    const conv = createConversation((name ?? "").trim() || "New conversation");
+    await chatStore.create(conv);
+    activeConv = conv;
+    await syncChatList();
+  });
+  vscode.commands.registerCommand("deci.chat.delete", async (convId: unknown) => {
+    if (typeof convId !== "string") return;
+    await chatStore.delete(convId);
+    if (activeConv?.id === convId) activeConv = null;
+    await syncChatList();
+  });
+  vscode.commands.registerCommand("deci.chat.rename", async (convId: unknown, title: unknown) => {
+    if (typeof convId !== "string") return;
+    const next = typeof title === "string" && title.trim()
+      ? title.trim()
+      : await vscode.window.showInputBox?.({ prompt: "New title" });
+    if (!next?.trim()) return;
+    const conv = await chatStore.get(convId);
+    if (!conv) return;
+    await chatStore.update(renameConversation(conv, next.trim()));
+    await syncChatList();
+  });
+  vscode.commands.registerCommand("deci.chat.send", async (text: unknown) => {
+    if (typeof text !== "string" || !activeConv) return;
+    postToChat({ type: "streamingState", streaming: true });
+    await chatEngine.sendMessage(activeConv.id, text);
+    activeConv = await chatStore.get(activeConv.id);
+    await pushChat();
+  });
+  vscode.commands.registerCommand("deci.chat.retry", async () => {
+    if (!activeConv) return;
+    postToChat({ type: "streamingState", streaming: true });
+    await chatEngine.retry(activeConv.id);
+    activeConv = await chatStore.get(activeConv.id);
+    await pushChat();
+  });
+  vscode.commands.registerCommand("deci.chat.toggleFlag", async (flag: unknown, on: unknown) => {
+    if (!activeConv || typeof flag !== "string") return;
+    const updated = updateContextFlags(activeConv, { [flag]: on === true });
+    await chatStore.update(updated);
+    activeConv = updated;
+  });
+  vscode.commands.registerCommand("deci.chat.approve", async (approved: unknown) => {
+    chatEngine.resolveApproval(approved === true);
+  });
+  vscode.commands.registerCommand("deci.chat.cancel", () => {
+    chatEngine.cancel();
+  });
+
   vscode.commands.registerCommand("deci.showReviewMap", (diffText: unknown) => {
     const diff = typeof diffText === "string" ? diffText : "";
     const q = decisionsForDiff(diff);
     providers["deci.review"].set(buildReviewNodes(buildReviewMap(diff)));
     providers["deci.decisions"].set(buildDecisionNodes(q));
+    providers["deci.evidence"].set(
+      buildEvidenceNodes(
+        collectQueueEvidence(
+          q,
+          emptyContext({ changedFiles: [...new Set(q.map((d) => d.file))] }),
+        ),
+      ),
+    );
     entries = noteReview(entries, `review ${entries.length + 1}`, diff, q);
     syncHistory();
     return showReviewMap(vscode, diff);
   });
+  vscode.commands.registerCommand("deci.showDecisions", (diffText: unknown) =>
+    showDecisions(vscode, typeof diffText === "string" ? diffText : ""),
+  );
   vscode.commands.registerCommand("deci.showHistory", () => showHistory(vscode, entries));
   vscode.commands.registerCommand("deci.showEvidenceFor", (queueArg: unknown) => {
     const q = Array.isArray(queueArg) ? (queueArg as DecisionPoint[]) : decisionsForDiff("");
@@ -523,6 +1095,13 @@ export function activate(vscode: Vscode): {
         entries = noteReview(entries, label, diffText, q);
         syncHistory();
       },
+    },
+    chat: {
+      store: () => chatStore,
+      engine: () => chatEngine,
+      getActive: () => activeConv,
+      refresh: () => syncChatList(),
+      doAction,
     },
   };
 }

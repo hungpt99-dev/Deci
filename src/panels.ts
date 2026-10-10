@@ -12,7 +12,8 @@ export type PanelViewId =
   | "deci.decisions"
   | "deci.alternatives"
   | "deci.evidence"
-  | "deci.history";
+  | "deci.history"
+  | "deci.chat";
 
 export interface PanelViewDef {
   id: PanelViewId;
@@ -25,6 +26,7 @@ export const PANEL_VIEWS: PanelViewDef[] = [
   { id: "deci.alternatives", title: "Alternatives" },
   { id: "deci.evidence", title: "Evidence" },
   { id: "deci.history", title: "History" },
+  { id: "deci.chat", title: "Chat" },
 ];
 
 export interface PanelNode {
